@@ -337,3 +337,7 @@ begin
   get diagnostics n = row_count;
   return n;
 end $$;
+
+-- ───────── 직원별 정규 출근 시각 ─────────
+alter table public.profiles add column if not exists work_start time;
+alter table public.settings add column if not exists work_start time not null default '09:30';

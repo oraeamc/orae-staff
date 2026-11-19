@@ -108,6 +108,15 @@ function choose(title, options, current) {
   });
 }
 
+const hm = (t) => (t || '').slice(0, 5);
+const startOf = (p) => hm(p?.work_start || state.settings?.work_start || '09:30');
+const endOf = (p) => hm(p?.work_end || state.settings?.work_end || '18:00');
+// 지각 분: 출근 시각이 정규 출근 시각보다 늦은 만큼 (고정 패턴상 정규 근무일만)
+function lateMin(p, rec, kind = 'regular') {
+  if (!p || !rec?.clock_in || kind !== 'regular') return 0;
+  const d = (new Date(rec.clock_in) - new Date(`${rec.work_date}T${startOf(p)}:00+09:00`)) / 60000;
+  return d >= 1 ? Math.floor(d) : 0;
+}
 const OT_OPTIONS = Array.from({ length: 16 }, (_, i) => (i + 1) * 30); // 30분 ~ 8시간
 const fmtMin = (m) => { m = Number(m) || 0; const h = Math.floor(m / 60), mm = m % 60; return h && mm ? `${h}시간 ${mm}분` : h ? `${h}시간` : `${mm}분`; };
 
@@ -276,7 +285,7 @@ async function viewHome() {
 
   let shiftText = '근무표 미정';
   if (todayLeave) shiftText = KIND[todayLeave.kind];
-  else shiftText = todayShift.kind === 'regular' ? `정규 · ${(me.work_end || state.settings.work_end || '18:00').slice(0, 5)} 퇴근` : SHIFT[todayShift.kind].label;
+  else shiftText = todayShift.kind === 'regular' ? `정규 · ${startOf(me)}–${endOf(me)}` : SHIFT[todayShift.kind].label;
 
   let btn;
   if (open) btn = `<button class="btn primary big" data-action="clock" data-dir="out" ${net.allowed ? '' : 'disabled'}>퇴근하기</button>`;
@@ -439,7 +448,7 @@ async function viewManage() {
     const a = todayAtt.find((x) => x.user_id === p.id) || openAtt.find((x) => x.user_id === p.id);
     const sh = effShift(p, today, todayShifts);
     const lv = approved.find((l) => l.user_id === p.id && l.start_date <= today && l.end_date >= today);
-    return `<tr><td><b>${esc(p.name)}</b></td><td>${lv ? KIND[lv.kind] : SHIFT[sh.kind].label}</td><td>${fmtTime(a?.clock_in)}</td><td>${fmtTime(a?.clock_out)}</td></tr>`;
+    return `<tr><td><b>${esc(p.name)}</b></td><td>${lv ? KIND[lv.kind] : SHIFT[sh.kind].label}</td><td>${fmtTime(a?.clock_in)}${lateMin(p, a, lv ? 'leave' : sh.kind) ? ` <span class="badge b-pending">지각 ${fmtMin(lateMin(p, a, lv ? 'leave' : sh.kind))}</span>` : ''}</td><td>${fmtTime(a?.clock_out)}</td></tr>`;
   }).join('');
 
   const pendHtml = pending.length ? pending.map((l) => {
@@ -462,10 +471,13 @@ async function viewManage() {
     </div>`;
   }).join('') : '<p class="sub">대기 중인 신청이 없어요</p>';
 
-  const logRows = logs.map((r) => `<tr>
-    <td>${md(r.work_date)}</td><td>${esc(nameOf(r.user_id))}</td><td>${fmtTime(r.clock_in)}</td><td>${fmtTime(r.clock_out)}</td><td>${hours(r.clock_in, r.clock_out)}</td>
+  const monthShifts = must(await sb.from('shifts').select('*').gte('work_date', mStart).lte('work_date', mEnd));
+  const kindOn = (p, d) => (approved.some((l) => l.user_id === p.id && l.kind === 'full' && l.start_date <= d && l.end_date >= d) ? 'leave'
+    : approved.some((l) => l.user_id === p.id && l.kind === 'am' && l.start_date === d) ? 'leave' : effShift(p, d, monthShifts).kind);
+  const logRows = logs.map((r) => { const lp = state.profiles.find((x) => x.id === r.user_id); const late = lp ? lateMin(lp, r, kindOn(lp, r.work_date)) : 0; return `<tr>
+    <td>${md(r.work_date)}</td><td>${esc(nameOf(r.user_id))}</td><td>${fmtTime(r.clock_in)}${late ? ` <span class="badge b-pending">지각 ${fmtMin(late)}</span>` : ''}</td><td>${fmtTime(r.clock_out)}</td><td>${hours(r.clock_in, r.clock_out)}</td>
     <td class="small">${r.auto_out ? '<b style="color:var(--warn)">자동 퇴근</b>' : r.edit_note ? `수정: ${esc(r.edit_note)}` : ''}</td>
-    <td><button class="btn sm" data-action="editAtt" data-id="${r.id}">수정</button></td></tr>`).join('');
+    <td><button class="btn sm" data-action="editAtt" data-id="${r.id}">수정</button></td></tr>`; }).join('');
 
   const waiting = state.profiles.filter((p) => p.approved === false).length;
   const otHtml = otPending.length ? otPending.map((o) => {
@@ -558,7 +570,7 @@ async function viewPeople() {
       <td><input type="text" name="job" value="${esc(p.job)}" aria-label="직군" style="min-width:80px"></td>
       <td><select name="role" aria-label="권한"><option value="staff" ${p.role === 'staff' ? 'selected' : ''}>직원</option><option value="admin" ${p.role === 'admin' ? 'selected' : ''}>원장(관리)</option></select></td>
       <td><input type="date" name="hire_date" value="${p.hire_date || ''}" aria-label="입사일"></td>
-      <td><input type="time" name="work_end" value="${(p.work_end || '').slice(0, 5)}" aria-label="정규 퇴근 시각" style="width:110px"></td>
+      <td><div style="display:flex;flex-direction:column;gap:4px"><input type="time" name="work_start" value="${hm(p.work_start)}" aria-label="정규 출근 시각" style="width:110px"><input type="time" name="work_end" value="${hm(p.work_end)}" aria-label="정규 퇴근 시각" style="width:110px"></div></td>
       <td><label class="check"><input type="checkbox" name="is_employee" ${p.is_employee ? 'checked' : ''}>근로자</label><label class="check"><input type="checkbox" name="track_leave" ${p.track_leave !== false ? 'checked' : ''}>연차 관리</label><label class="check"><input type="checkbox" name="active" ${p.active ? 'checked' : ''}>재직</label></td>
       <td><div class="days">${[1, 2, 3, 4, 5, 6, 0].map((w) => `<label title="${DOW[w]}요일 고정 휴무"><input type="checkbox" name="off${w}" ${(p.weekly_off || []).includes(w) ? 'checked' : ''}>${DOW[w]}</label>`).join('')}</div></td>
       <td><input type="number" name="leave_adjust" value="${info ? info.adjust : p.leave_adjust}" step="0.5" aria-label="연차 가감" style="width:80px"></td>
@@ -572,8 +584,8 @@ async function viewPeople() {
   ${pendingHtml}
   <section class="card">
     <h2>직원</h2>
-    <p class="small">퇴근 시각: 퇴근을 안 누르면 이 시각으로 자동 퇴근 처리돼요. 고정 휴무 요일: 체크한 요일은 근무표에 자동으로 '휴무', 나머지는 '정규'로 들어가요. 근로자: 5인 인원 계산에 들어가는 직원(대표원장은 해제). 연차 관리: 연차를 계산·표시할 사람(원장님도 체크 가능). 연차 가감: 이월·포상 등 수동 조정(지금 연차 기간에만 적용, 다음 해엔 자동으로 0). 연차 칸은 발생 / 사용 / 잔여.</p>
-    <div class="tbl-wrap"><table style="min-width:1220px"><thead><tr><th>이름</th><th>직군</th><th>권한</th><th>입사일</th><th>퇴근 시각</th><th>구분</th><th>고정 휴무 요일</th><th>연차 가감</th><th>연차</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
+    <p class="small">출근/퇴근 시각: 출근이 늦으면 관리 화면에 지각으로 표시되고, 퇴근을 안 누르면 퇴근 시각으로 자동 처리돼요. 고정 휴무 요일: 체크한 요일은 근무표에 자동으로 '휴무', 나머지는 '정규'로 들어가요. 근로자: 5인 인원 계산에 들어가는 직원(대표원장은 해제). 연차 관리: 연차를 계산·표시할 사람(원장님도 체크 가능). 연차 가감: 이월·포상 등 수동 조정(지금 연차 기간에만 적용, 다음 해엔 자동으로 0). 연차 칸은 발생 / 사용 / 잔여.</p>
+    <div class="tbl-wrap"><table style="min-width:1220px"><thead><tr><th>이름</th><th>직군</th><th>권한</th><th>입사일</th><th>출근 / 퇴근 시각</th><th>구분</th><th>고정 휴무 요일</th><th>연차 가감</th><th>연차</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
   </section>
   <form class="card" data-form="newUser">
     <h2>직원 추가</h2>
@@ -597,7 +609,8 @@ async function viewPeople() {
       <label class="check"><input type="radio" name="leave_mode" value="custom" ${s.leave_mode === 'custom' ? 'checked' : ''}>병원 자체 규정</label>
       <div class="grid2" style="grid-template-columns:repeat(auto-fit,minmax(200px,1fr))">
         <label class="f">1년 이상 직원 연간 연차 (일)<input type="number" name="custom_annual_days" value="${s.custom_annual_days}" step="0.5" min="0"></label>
-        <label class="f">기본 퇴근 시각 (직원별 퇴근 시각이 비어 있을 때)<input type="time" name="work_end" value="${(s.work_end || '18:00').slice(0, 5)}"></label>
+        <label class="f">기본 출근 시각 (직원별 값이 비어 있을 때)<input type="time" name="work_start" value="${hm(s.work_start || '09:30')}"></label>
+        <label class="f">기본 퇴근 시각 (직원별 값이 비어 있을 때)<input type="time" name="work_end" value="${hm(s.work_end || '18:00')}"></label>
       </div>
       <label class="check"><input type="checkbox" name="use_duty" ${s.use_duty ? 'checked' : ''}>당직 사용 (근무표에 야간·주말 당직 표시)</label>
       <div class="f">1년 미만 직원 연차
@@ -820,8 +833,8 @@ const actions = {
     let q = sb.from('attendance').select('*').gte('work_date', mStart).lte('work_date', mEnd).order('work_date');
     if (state.logUser) q = q.eq('user_id', state.logUser);
     const rows = must(await q);
-    const lines = [['날짜', '이름', '출근', '퇴근', '근무시간', '수정사유']]
-      .concat(rows.map((r) => [r.work_date, nameOf(r.user_id), fmtTime(r.clock_in), fmtTime(r.clock_out), hours(r.clock_in, r.clock_out), r.edit_note || '']));
+    const lines = [['날짜', '이름', '출근', '퇴근', '근무시간', '자동퇴근', '비고']]
+      .concat(rows.map((r) => [r.work_date, nameOf(r.user_id), fmtTime(r.clock_in), fmtTime(r.clock_out), hours(r.clock_in, r.clock_out), r.auto_out ? 'Y' : '', r.edit_note || '']));
     const text = '﻿' + lines.map((l) => l.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\r\n');
     const a = document.createElement('a');
     a.href = URL.createObjectURL(new Blob([text], { type: 'text/csv;charset=utf-8' }));
@@ -832,7 +845,7 @@ const actions = {
     const v = (n) => tr.querySelector(`[name="${n}"]`);
     const patch = {
       name: v('name').value.trim(), job: v('job').value.trim(), role: v('role').value,
-      hire_date: v('hire_date').value || null, work_end: v('work_end').value || null, is_employee: v('is_employee').checked, track_leave: v('track_leave').checked,
+      hire_date: v('hire_date').value || null, work_start: v('work_start').value || null, work_end: v('work_end').value || null, is_employee: v('is_employee').checked, track_leave: v('track_leave').checked,
       active: v('active').checked, leave_adjust: Number(v('leave_adjust').value || 0),
       weekly_off: [0, 1, 2, 3, 4, 5, 6].filter((w) => v(`off${w}`).checked),
       leave_adjust_period: null,
@@ -1022,6 +1035,7 @@ const forms = {
       custom_first_year_days: Number(f.custom_first_year_days.value || 0),
       custom_seniority: f.custom_seniority.checked,
       work_end: f.work_end.value || '18:00',
+      work_start: f.work_start.value || '09:30',
       use_duty: f.use_duty.checked,
       updated_at: new Date().toISOString(),
     };
