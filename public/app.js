@@ -276,7 +276,7 @@ async function viewHome() {
 
   let shiftText = '근무표 미정';
   if (todayLeave) shiftText = KIND[todayLeave.kind];
-  else shiftText = todayShift.kind === 'regular' ? `${state.settings.regular_hours} · 정규` : SHIFT[todayShift.kind].label;
+  else shiftText = todayShift.kind === 'regular' ? `정규 · ${(me.work_end || state.settings.work_end || '18:00').slice(0, 5)} 퇴근` : SHIFT[todayShift.kind].label;
 
   let btn;
   if (open) btn = `<button class="btn primary big" data-action="clock" data-dir="out" ${net.allowed ? '' : 'disabled'}>퇴근하기</button>`;
@@ -558,6 +558,7 @@ async function viewPeople() {
       <td><input type="text" name="job" value="${esc(p.job)}" aria-label="직군" style="min-width:80px"></td>
       <td><select name="role" aria-label="권한"><option value="staff" ${p.role === 'staff' ? 'selected' : ''}>직원</option><option value="admin" ${p.role === 'admin' ? 'selected' : ''}>원장(관리)</option></select></td>
       <td><input type="date" name="hire_date" value="${p.hire_date || ''}" aria-label="입사일"></td>
+      <td><input type="time" name="work_end" value="${(p.work_end || '').slice(0, 5)}" aria-label="정규 퇴근 시각" style="width:110px"></td>
       <td><label class="check"><input type="checkbox" name="is_employee" ${p.is_employee ? 'checked' : ''}>근로자</label><label class="check"><input type="checkbox" name="track_leave" ${p.track_leave !== false ? 'checked' : ''}>연차 관리</label><label class="check"><input type="checkbox" name="active" ${p.active ? 'checked' : ''}>재직</label></td>
       <td><div class="days">${[1, 2, 3, 4, 5, 6, 0].map((w) => `<label title="${DOW[w]}요일 고정 휴무"><input type="checkbox" name="off${w}" ${(p.weekly_off || []).includes(w) ? 'checked' : ''}>${DOW[w]}</label>`).join('')}</div></td>
       <td><input type="number" name="leave_adjust" value="${info ? info.adjust : p.leave_adjust}" step="0.5" aria-label="연차 가감" style="width:80px"></td>
@@ -571,8 +572,8 @@ async function viewPeople() {
   ${pendingHtml}
   <section class="card">
     <h2>직원</h2>
-    <p class="small">고정 휴무 요일: 체크한 요일은 근무표에 자동으로 '휴무', 나머지는 '정규'로 들어가요. 근로자: 5인 인원 계산에 들어가는 직원(대표원장은 해제). 연차 관리: 연차를 계산·표시할 사람(원장님도 체크 가능). 연차 가감: 이월·포상 등 수동 조정(지금 연차 기간에만 적용, 다음 해엔 자동으로 0). 연차 칸은 발생 / 사용 / 잔여.</p>
-    <div class="tbl-wrap"><table style="min-width:1100px"><thead><tr><th>이름</th><th>직군</th><th>권한</th><th>입사일</th><th>구분</th><th>고정 휴무 요일</th><th>연차 가감</th><th>연차</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
+    <p class="small">퇴근 시각: 퇴근을 안 누르면 이 시각으로 자동 퇴근 처리돼요. 고정 휴무 요일: 체크한 요일은 근무표에 자동으로 '휴무', 나머지는 '정규'로 들어가요. 근로자: 5인 인원 계산에 들어가는 직원(대표원장은 해제). 연차 관리: 연차를 계산·표시할 사람(원장님도 체크 가능). 연차 가감: 이월·포상 등 수동 조정(지금 연차 기간에만 적용, 다음 해엔 자동으로 0). 연차 칸은 발생 / 사용 / 잔여.</p>
+    <div class="tbl-wrap"><table style="min-width:1220px"><thead><tr><th>이름</th><th>직군</th><th>권한</th><th>입사일</th><th>퇴근 시각</th><th>구분</th><th>고정 휴무 요일</th><th>연차 가감</th><th>연차</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
   </section>
   <form class="card" data-form="newUser">
     <h2>직원 추가</h2>
@@ -596,8 +597,7 @@ async function viewPeople() {
       <label class="check"><input type="radio" name="leave_mode" value="custom" ${s.leave_mode === 'custom' ? 'checked' : ''}>병원 자체 규정</label>
       <div class="grid2" style="grid-template-columns:repeat(auto-fit,minmax(200px,1fr))">
         <label class="f">1년 이상 직원 연간 연차 (일)<input type="number" name="custom_annual_days" value="${s.custom_annual_days}" step="0.5" min="0"></label>
-        <label class="f">정규 근무시간 표시<input type="text" name="regular_hours" value="${esc(s.regular_hours)}"></label>
-        <label class="f">퇴근 미체크 시 자동 퇴근 시각<input type="time" name="work_end" value="${(s.work_end || '18:00').slice(0, 5)}"></label>
+        <label class="f">기본 퇴근 시각 (직원별 퇴근 시각이 비어 있을 때)<input type="time" name="work_end" value="${(s.work_end || '18:00').slice(0, 5)}"></label>
       </div>
       <label class="check"><input type="checkbox" name="use_duty" ${s.use_duty ? 'checked' : ''}>당직 사용 (근무표에 야간·주말 당직 표시)</label>
       <div class="f">1년 미만 직원 연차
@@ -832,7 +832,7 @@ const actions = {
     const v = (n) => tr.querySelector(`[name="${n}"]`);
     const patch = {
       name: v('name').value.trim(), job: v('job').value.trim(), role: v('role').value,
-      hire_date: v('hire_date').value || null, is_employee: v('is_employee').checked, track_leave: v('track_leave').checked,
+      hire_date: v('hire_date').value || null, work_end: v('work_end').value || null, is_employee: v('is_employee').checked, track_leave: v('track_leave').checked,
       active: v('active').checked, leave_adjust: Number(v('leave_adjust').value || 0),
       weekly_off: [0, 1, 2, 3, 4, 5, 6].filter((w) => v(`off${w}`).checked),
       leave_adjust_period: null,
@@ -1021,7 +1021,6 @@ const forms = {
       custom_first_year_upfront: f.first_year.value === 'upfront',
       custom_first_year_days: Number(f.custom_first_year_days.value || 0),
       custom_seniority: f.custom_seniority.checked,
-      regular_hours: f.regular_hours.value.trim() || '09:00–18:00',
       work_end: f.work_end.value || '18:00',
       use_duty: f.use_duty.checked,
       updated_at: new Date().toISOString(),

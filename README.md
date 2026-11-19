@@ -120,7 +120,7 @@
 - **비밀번호를 잊었어요** → 원장님이 직원·설정에서 "비번 변경"
 - **퇴사자** → 직원·설정에서 "재직" 체크 해제 후 저장 (기록은 남고 로그인만 막힘)
 - **Supabase 무료 플랜**은 일주일 넘게 아무도 접속하지 않으면 잠시 멈춥니다. 매일 쓰면 문제없고, 멈추면 Supabase 대시보드에서 Restore를 누르면 됩니다.
-- **이미 schema.sql을 실행한 뒤 업데이트**하는 경우 → SQL Editor에서 `supabase/002_lunch_device.sql`, `003_self_signup.sql`, `004_weekly_off.sql`, `005_leave_cancel.sql`, `006_first_year_upfront.sql`, `007_auto_out_overtime.sql`을 차례로 한 번씩 실행하세요. (처음 설치라면 필요 없음)
+- **이미 schema.sql을 실행한 뒤 업데이트**하는 경우 → SQL Editor에서 `supabase/002_lunch_device.sql`, `003_self_signup.sql`, `004_weekly_off.sql`, `005_leave_cancel.sql`, `006_first_year_upfront.sql`, `007_auto_out_overtime.sql`, `008_person_work_end.sql`을 차례로 한 번씩 실행하세요. (처음 설치라면 필요 없음)
 - **가입 신청은 병원 Wi-Fi에서만** 됩니다. 승인 전 계정은 로그인해도 "승인 대기" 화면만 보이고 다른 직원 정보·근무표를 볼 수 없습니다.
 - **코드 수정 후 반영** → GitHub 저장소에 파일을 다시 올리면 Vercel이 자동으로 새로 배포합니다.
 
