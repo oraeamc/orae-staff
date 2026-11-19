@@ -69,6 +69,24 @@ function effShift(p, date, shifts) {
   return { kind: 'regular', auto: true };
 }
 
+// 화면 안 확인창 (브라우저 기본 확인창은 일부 앱·홈화면 앱에서 막힘)
+function ask(message, { input = false, value = '', placeholder = '', ok = '확인', danger = false } = {}) {
+  return new Promise((resolve) => {
+    const wrap = document.createElement('div');
+    wrap.className = 'modal-back';
+    wrap.innerHTML = `<form class="modal card" role="dialog" aria-modal="true">
+      <p style="margin:0;font-size:15px;line-height:1.5">${esc(message)}</p>
+      ${input ? `<input type="text" name="v" value="${esc(value)}" placeholder="${esc(placeholder)}" aria-label="${esc(message)}">` : ''}
+      <div class="grid2"><button type="button" class="btn" data-x="cancel">닫기</button><button type="submit" class="btn primary ${danger ? 'danger-fill' : ''}">${esc(ok)}</button></div>
+    </form>`;
+    const done = (v) => { wrap.remove(); resolve(v); };
+    wrap.addEventListener('click', (e) => { if (e.target === wrap || e.target.dataset.x === 'cancel') done(input ? null : false); });
+    wrap.querySelector('form').addEventListener('submit', (e) => { e.preventDefault(); e.stopPropagation(); done(input ? wrap.querySelector('[name=v]').value : true); });
+    document.body.appendChild(wrap);
+    (wrap.querySelector('[name=v]') || wrap.querySelector('[type=submit]')).focus();
+  });
+}
+
 let toastTimer;
 function toast(msg) {
   const t = document.getElementById('toast');
@@ -415,7 +433,7 @@ async function viewManage() {
     </section>
     <section class="card narrow"><h2>연차 승인 대기</h2>${pendHtml}
       <h2 style="margin-top:8px">다가오는 확정 연차</h2>
-      <div class="list">${others.filter((o) => LIVE.includes(o.status)).map((o) => `<div><span>${esc(nameOf(o.user_id))} · ${md(o.start_date)}${o.end_date !== o.start_date ? ` ~ ${md(o.end_date)}` : ''} ${KIND[o.kind]}</span><button class="btn sm ghost danger" data-action="adminCancel" data-id="${o.id}">승인 취소</button></div>`).join('') || '<div><span class="sub">없어요</span></div>'}</div>
+      <div class="list">${others.filter((o) => LIVE.includes(o.status)).map((o) => `<div><span>${esc(nameOf(o.user_id))} · ${md(o.start_date)}${o.end_date !== o.start_date ? ` ~ ${md(o.end_date)}` : ''} ${KIND[o.kind]}</span><button class="btn sm danger" data-action="adminCancel" data-id="${o.id}">승인 취소</button></div>`).join('') || '<div><span class="sub">없어요</span></div>'}</div>
     </section>
   </div>
   <section class="card">
@@ -675,12 +693,12 @@ const actions = {
     renderView();
   },
   async requestCancel(b) {
-    if (!window.confirm('이 연차의 취소를 원장님께 요청할까요?')) return;
+    if (!(await ask('이 연차의 취소를 원장님께 요청할까요?', { ok: '취소 요청' }))) return;
     try { must(await sb.rpc('request_leave_cancel', { p_id: Number(b.dataset.id) })); toast('취소 요청을 보냈어요'); } catch (e) { toast(e.message); }
     renderView();
   },
   async adminCancel(b) {
-    if (!window.confirm('승인된 연차를 취소할까요? 연차가 직원에게 다시 돌아갑니다.')) return;
+    if (!(await ask('승인된 연차를 취소할까요? 사용한 연차가 직원에게 다시 돌아갑니다.', { ok: '연차 취소', danger: true }))) return;
     try { must(await sb.from('leave_requests').update({ status: 'cancelled', decided_by: state.me.id, decided_at: new Date().toISOString() }).eq('id', b.dataset.id)); toast('연차를 취소했어요'); } catch (e) { toast(e.message); }
     renderView();
   },
@@ -733,7 +751,7 @@ const actions = {
     renderView();
   },
   async resetPw(b) {
-    const pw = window.prompt(`${nameOf(b.dataset.id)}님의 새 비밀번호 (8자 이상)`);
+    const pw = await ask(`${nameOf(b.dataset.id)}님의 새 비밀번호 (8자 이상)`, { input: true, ok: '변경' });
     if (!pw) return;
     try { await api('/api/users', { method: 'PUT', body: JSON.stringify({ user_id: b.dataset.id, password: pw }) }); toast('비밀번호를 바꿨어요'); } catch (e) { toast(e.message); }
   },
@@ -748,12 +766,12 @@ const actions = {
     renderView();
   },
   async rejectUser(b) {
-    if (!window.confirm(`${nameOf(b.dataset.id)}님의 가입 신청을 거절할까요? 계정이 삭제됩니다.`)) return;
+    if (!(await ask(`${nameOf(b.dataset.id)}님의 가입 신청을 거절할까요? 계정이 삭제됩니다.`, { ok: '거절', danger: true }))) return;
     try { await api('/api/users', { method: 'DELETE', body: JSON.stringify({ user_id: b.dataset.id }) }); await refreshBase(); toast('거절했어요'); } catch (e) { toast(e.message); }
     renderView();
   },
   async registerDevice() {
-    const name = window.prompt('이 기기 이름 (예: 데스크 PC)', '데스크 PC');
+    const name = await ask('이 기기 이름', { input: true, value: '데스크 PC', ok: '등록' });
     if (name === null) return;
     try {
       const r = await api('/api/device', { method: 'POST', body: JSON.stringify({ action: 'register', name }) });
