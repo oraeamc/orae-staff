@@ -60,7 +60,7 @@ export function leaveInfo(p, settings, profiles, approvedLeaves, today = kstToda
   const base = mode === 'legal' ? legalDays(months) : customDays(months, settings);
   const granted = base + Number(p.leave_adjust || 0);
   const used = approvedLeaves
-    .filter((l) => l.user_id === p.id && l.status === 'approved' && l.start_date >= start && l.start_date <= end)
+    .filter((l) => l.user_id === p.id && ['approved', 'cancel_requested'].includes(l.status) && l.start_date >= start && l.start_date <= end)
     .reduce((a, l) => a + Number(l.days), 0);
   return { mode, months, years, start, end, granted, used, remain: granted - used };
 }

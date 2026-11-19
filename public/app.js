@@ -13,7 +13,8 @@ const SHIFT = {
 };
 const CYCLE = [null, 'regular', 'night', 'weekend', 'off'];
 const KIND = { full: '연차', am: '오전 반차', pm: '오후 반차' };
-const STATUS = { pending: '승인 대기', approved: '승인', rejected: '반려' };
+const STATUS = { pending: '승인 대기', approved: '승인', rejected: '반려', cancel_requested: '취소 요청 중', cancelled: '취소됨' };
+const LIVE = ['approved', 'cancel_requested']; // 확정된(사용 중인) 연차
 
 const ICON = {
   clock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/></svg>',
@@ -197,7 +198,7 @@ async function renderView() {
 }
 
 async function approvedLeaves(userId) {
-  let q = sb.from('leave_requests').select('*').eq('status', 'approved');
+  let q = sb.from('leave_requests').select('*').in('status', LIVE);
   if (userId) q = q.eq('user_id', userId);
   return must(await q);
 }
@@ -291,7 +292,8 @@ async function viewLeave() {
     <div class="list">${mine.length ? mine.map((l) => `<div>
       <span>${md(l.start_date)}${l.end_date !== l.start_date ? ` ~ ${md(l.end_date)}` : ''} · ${KIND[l.kind]} <span class="small">${num(l.days)}일</span></span>
       <span class="row" style="gap:6px"><span class="badge b-${l.status}">${STATUS[l.status]}</span>
-      ${l.status === 'pending' ? `<button class="btn sm ghost" data-action="cancelLeave" data-id="${l.id}">취소</button>` : ''}</span></div>`).join('') : '<div><span class="sub">신청 내역이 없어요</span></div>'}</div>
+      ${l.status === 'pending' ? `<button class="btn sm ghost" data-action="cancelLeave" data-id="${l.id}">취소</button>` : ''}
+      ${l.status === 'approved' && l.end_date >= today ? `<button class="btn sm ghost" data-action="requestCancel" data-id="${l.id}">취소 요청</button>` : ''}</span></div>`).join('') : '<div><span class="sub">신청 내역이 없어요</span></div>'}</div>
   </section>`;
 }
 
@@ -303,7 +305,7 @@ async function viewSchedule() {
   const we = addDays(ws, 6);
   const [shifts, leaves] = await Promise.all([
     sb.from('shifts').select('*').gte('work_date', ws).lte('work_date', we).then(must),
-    sb.from('leave_requests').select('*').eq('status', 'approved').lte('start_date', we).gte('end_date', ws).then(must),
+    sb.from('leave_requests').select('*').in('status', LIVE).lte('start_date', we).gte('end_date', ws).then(must),
   ]);
   const people = activePeople();
   const admin = isAdmin();
@@ -348,8 +350,8 @@ async function viewManage() {
   const [todayAtt, openAtt, pending, others, todayShifts, logs, approved] = await Promise.all([
     sb.from('attendance').select('*').eq('work_date', today).then(must),
     sb.from('attendance').select('*').is('clock_out', null).not('clock_in', 'is', null).gte('work_date', addDays(today, -1)).then(must),
-    sb.from('leave_requests').select('*').eq('status', 'pending').order('start_date').then(must),
-    sb.from('leave_requests').select('*').in('status', ['pending', 'approved']).gte('end_date', today).then(must),
+    sb.from('leave_requests').select('*').in('status', ['pending', 'cancel_requested']).order('start_date').then(must),
+    sb.from('leave_requests').select('*').in('status', ['pending', ...LIVE]).gte('end_date', today).order('start_date').then(must),
     sb.from('shifts').select('*').eq('work_date', today).then(must),
     (() => { let q = sb.from('attendance').select('*').gte('work_date', mStart).lte('work_date', mEnd).order('work_date', { ascending: false }); if (state.logUser) q = q.eq('user_id', state.logUser); return q.then(must); })(),
     approvedLeaves(),
@@ -368,6 +370,13 @@ async function viewManage() {
     const clash = others.filter((o) => o.id !== l.id && o.user_id !== l.user_id && o.start_date <= l.end_date && o.end_date >= l.start_date);
     const p = state.profiles.find((x) => x.id === l.user_id);
     const info = p ? leaveInfo(p, state.settings, state.profiles, approved) : null;
+    if (l.status === 'cancel_requested') {
+      return `<div class="card" style="border:1px solid var(--warn);box-shadow:none;padding:14px;gap:8px">
+      <div class="row between"><b>${esc(nameOf(l.user_id))} · ${KIND[l.kind]} ${num(l.days)}일 <span class="badge b-cancel_requested">취소 요청</span></b><span class="sub">${md(l.start_date)}${l.end_date !== l.start_date ? ` ~ ${md(l.end_date)}` : ''}</span></div>
+      <div class="small">승인된 연차를 취소하고 싶다는 요청이에요. 취소하면 연차가 돌아가고 근무표도 원래대로 바뀌어요.</div>
+      <div class="grid2"><button class="btn primary" data-action="decide" data-id="${l.id}" data-s="cancelled">취소 승인</button><button class="btn" data-action="decide" data-id="${l.id}" data-s="approved">연차 유지</button></div>
+    </div>`;
+    }
     return `<div class="card" style="border:1px solid var(--line);box-shadow:none;padding:14px;gap:8px">
       <div class="row between"><b>${esc(nameOf(l.user_id))} · ${KIND[l.kind]} ${num(l.days)}일</b><span class="sub">${md(l.start_date)}${l.end_date !== l.start_date ? ` ~ ${md(l.end_date)}` : ''}</span></div>
       ${l.reason ? `<div class="small">사유: ${esc(l.reason)}</div>` : ''}
@@ -395,7 +404,10 @@ async function viewManage() {
     <section class="card wide"><h2>오늘 (${md(today)})</h2>
       <div class="tbl-wrap"><table><thead><tr><th>이름</th><th>근무</th><th>출근</th><th>퇴근</th></tr></thead><tbody>${todayRows}</tbody></table></div>
     </section>
-    <section class="card narrow"><h2>연차 승인 대기</h2>${pendHtml}</section>
+    <section class="card narrow"><h2>연차 승인 대기</h2>${pendHtml}
+      <h2 style="margin-top:8px">다가오는 확정 연차</h2>
+      <div class="list">${others.filter((o) => LIVE.includes(o.status)).map((o) => `<div><span>${esc(nameOf(o.user_id))} · ${md(o.start_date)}${o.end_date !== o.start_date ? ` ~ ${md(o.end_date)}` : ''} ${KIND[o.kind]}</span><button class="btn sm ghost danger" data-action="adminCancel" data-id="${o.id}">승인 취소</button></div>`).join('') || '<div><span class="sub">없어요</span></div>'}</div>
+    </section>
   </div>
   <section class="card">
     <div class="row between"><h2>출퇴근 기록</h2>
@@ -647,10 +659,20 @@ const actions = {
     } catch (e) { toast(e.message); }
     renderView();
   },
+  async requestCancel(b) {
+    if (!window.confirm('이 연차의 취소를 원장님께 요청할까요?')) return;
+    try { must(await sb.rpc('request_leave_cancel', { p_id: Number(b.dataset.id) })); toast('취소 요청을 보냈어요'); } catch (e) { toast(e.message); }
+    renderView();
+  },
+  async adminCancel(b) {
+    if (!window.confirm('승인된 연차를 취소할까요? 연차가 직원에게 다시 돌아갑니다.')) return;
+    try { must(await sb.from('leave_requests').update({ status: 'cancelled', decided_by: state.me.id, decided_at: new Date().toISOString() }).eq('id', b.dataset.id)); toast('연차를 취소했어요'); } catch (e) { toast(e.message); }
+    renderView();
+  },
   async decide(b) {
     try {
       must(await sb.from('leave_requests').update({ status: b.dataset.s, decided_by: state.me.id, decided_at: new Date().toISOString() }).eq('id', b.dataset.id));
-      toast(b.dataset.s === 'approved' ? '승인했어요' : '반려했어요');
+      toast({ approved: '승인했어요', rejected: '반려했어요', cancelled: '연차를 취소했어요' }[b.dataset.s]);
     } catch (e) { toast(e.message); }
     renderView();
   },
