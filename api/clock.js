@@ -10,6 +10,7 @@ export default async function handler(req, res) {
     if (!prof || !prof.active) return res.status(403).json({ error: '사용할 수 없는 계정입니다.' });
     if (prof.approved === false) return res.status(403).json({ error: '원장님 승인 후 사용할 수 있어요.' });
 
+    await admin.rpc('close_stale_attendance'); // 어제 이전 퇴근 미체크 기록 자동 처리
     const ip = clientIp(req);
     const allowed = ipAllowed(ip, await allowedIps());
 

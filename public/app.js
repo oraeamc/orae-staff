@@ -108,6 +108,9 @@ function choose(title, options, current) {
   });
 }
 
+const OT_OPTIONS = Array.from({ length: 16 }, (_, i) => (i + 1) * 30); // 30분 ~ 8시간
+const fmtMin = (m) => { m = Number(m) || 0; const h = Math.floor(m / 60), mm = m % 60; return h && mm ? `${h}시간 ${mm}분` : h ? `${h}시간` : `${mm}분`; };
+
 let toastTimer;
 function toast(msg) {
   const t = document.getElementById('toast');
@@ -155,6 +158,7 @@ async function loadBase() {
   // 승인 전 계정은 설정을 읽을 수 없음
   if (state.me && state.me.active && state.me.approved !== false) {
     state.settings = must(await sb.from('settings').select('*').eq('id', 1).single());
+    await sb.rpc('close_stale_attendance'); // 지난날 퇴근 미체크 → 정규 퇴근 시각으로 자동 처리
   }
 }
 
@@ -245,13 +249,18 @@ async function approvedLeaves(userId) {
 // ───────── 출퇴근 ─────────
 async function viewHome() {
   const me = state.me; const today = kstToday();
-  const [net, recs, shifts, leaves] = await Promise.all([
+  const monthStart = `${today.slice(0, 7)}-01`;
+  const [net, recs, shifts, leaves, ots] = await Promise.all([
     api('/api/clock').catch((e) => ({ error: e.message })),
     sb.from('attendance').select('*').eq('user_id', me.id).gte('work_date', addDays(today, -14)).order('work_date', { ascending: false }).then(must),
     sb.from('shifts').select('*').eq('user_id', me.id).gte('work_date', today).lte('work_date', addDays(today, 13)).order('work_date').then(must),
     approvedLeaves(me.id),
+    sb.from('overtime_requests').select('*').eq('user_id', me.id).gte('work_date', addDays(today, -40)).order('work_date', { ascending: false }).then(must),
   ]);
   const open = recs.find((r) => r.clock_in && !r.clock_out);
+  const autoMissed = recs.filter((r) => r.auto_out && r.work_date >= addDays(today, -3) && !ots.some((o) => o.work_date === r.work_date));
+  const otMonth = ots.filter((o) => o.status === 'approved' && o.work_date >= monthStart).reduce((a, o) => a + o.minutes, 0);
+  const otDate = state.otDate || today;
   const todayRec = recs.find((r) => r.work_date === today);
   const todayShift = effShift(me, today, shifts);
   const todayLeave = leaves.find((l) => l.start_date <= today && l.end_date >= today);
@@ -284,6 +293,9 @@ async function viewHome() {
   return `
   <div><h1>안녕하세요, ${esc(me.name)}님</h1><div class="sub">${md(today)}</div></div>
   ${netBox}
+  ${autoMissed.map((r) => `<div class="net no"><div><b>${md(r.work_date)} 퇴근 체크가 없어 ${fmtTime(r.clock_out)}로 자동 퇴근 처리됐어요.</b>
+    <div class="small">그보다 늦게까지 일했다면 추가근무를 신청해 주세요.</div>
+    <button class="btn sm" style="margin-top:6px" data-action="otFor" data-date="${r.work_date}">${md(r.work_date)} 추가근무 신청</button></div></div>`).join('')}
   <section class="card">
     <div class="row between"><span class="sub">오늘 근무</span><b>${esc(shiftText)}</b></div>
     ${btn}
@@ -300,8 +312,19 @@ async function viewHome() {
   </div>
   <section class="card">
     <h2>최근 기록</h2>
-    <div class="list">${recs.length ? recs.slice(0, 10).map((r) => `<div><span>${md(r.work_date)}</span><span class="sub">${fmtTime(r.clock_in)} – ${fmtTime(r.clock_out)}${r.edit_note ? ' · 수정됨' : ''}</span></div>`).join('') : '<div><span class="sub">아직 기록이 없어요</span></div>'}</div>
-  </section>`;
+    <div class="list">${recs.length ? recs.slice(0, 10).map((r) => `<div><span>${md(r.work_date)}</span><span class="sub">${fmtTime(r.clock_in)} – ${fmtTime(r.clock_out)}${r.auto_out ? ' · <b style="color:var(--warn)">자동 퇴근</b>' : r.edit_note ? ' · 수정됨' : ''}</span></div>`).join('') : '<div><span class="sub">아직 기록이 없어요</span></div>'}</div>
+  </section>
+  <form class="card" data-form="overtime" id="otForm">
+    <div class="row between"><h2>추가근무 신청</h2><span class="small">이번 달 승인 ${fmtMin(otMonth)}</span></div>
+    <div class="grid2">
+      <label class="f">날짜<input type="date" name="date" value="${otDate}" max="${today}" required></label>
+      <label class="f">추가근무 시간<select name="minutes">${OT_OPTIONS.map((m) => `<option value="${m}">${fmtMin(m)}</option>`).join('')}</select></label>
+    </div>
+    <label class="f">내용 (선택)<input type="text" name="reason" maxlength="100" placeholder="예: 응급 수술 보조"></label>
+    <button class="btn primary" type="submit">신청하기</button>
+    <div class="list">${ots.slice(0, 8).map((o) => `<div><span>${md(o.work_date)} · ${fmtMin(o.minutes)}${o.reason ? ` <span class="small">${esc(o.reason)}</span>` : ''}</span>
+      <span class="row" style="gap:6px"><span class="badge b-${o.status}">${STATUS[o.status]}</span>${o.status === 'pending' ? `<button type="button" class="btn sm ghost" data-action="cancelOt" data-id="${o.id}">취소</button>` : ''}</span></div>`).join('')}</div>
+  </form>`;
 }
 
 // ───────── 연차 ─────────
@@ -395,7 +418,7 @@ async function viewManage() {
   state.logMonth = month;
   const mStart = `${month}-01`;
   const mEnd = addDays(addDays(mStart, 31).slice(0, 7) + '-01', -1);
-  const [todayAtt, openAtt, pending, others, todayShifts, logs, approved] = await Promise.all([
+  const [todayAtt, openAtt, pending, others, todayShifts, logs, approved, otPending, otMonth] = await Promise.all([
     sb.from('attendance').select('*').eq('work_date', today).then(must),
     sb.from('attendance').select('*').is('clock_out', null).not('clock_in', 'is', null).gte('work_date', addDays(today, -1)).then(must),
     sb.from('leave_requests').select('*').in('status', ['pending', 'cancel_requested']).order('start_date').then(must),
@@ -403,7 +426,12 @@ async function viewManage() {
     sb.from('shifts').select('*').eq('work_date', today).then(must),
     (() => { let q = sb.from('attendance').select('*').gte('work_date', mStart).lte('work_date', mEnd).order('work_date', { ascending: false }); if (state.logUser) q = q.eq('user_id', state.logUser); return q.then(must); })(),
     approvedLeaves(),
+    sb.from('overtime_requests').select('*').eq('status', 'pending').order('work_date').then(must),
+    sb.from('overtime_requests').select('*').eq('status', 'approved').gte('work_date', mStart).lte('work_date', mEnd).then(must),
   ]);
+  const otAtt = otPending.length
+    ? must(await sb.from('attendance').select('*').in('work_date', [...new Set(otPending.map((o) => o.work_date))]))
+    : [];
   const people = activePeople();
   const here = people.filter((p) => todayAtt.some((a) => a.user_id === p.id && a.clock_in) || openAtt.some((a) => a.user_id === p.id));
 
@@ -436,16 +464,27 @@ async function viewManage() {
 
   const logRows = logs.map((r) => `<tr>
     <td>${md(r.work_date)}</td><td>${esc(nameOf(r.user_id))}</td><td>${fmtTime(r.clock_in)}</td><td>${fmtTime(r.clock_out)}</td><td>${hours(r.clock_in, r.clock_out)}</td>
-    <td class="small">${r.edit_note ? `수정: ${esc(r.edit_note)}` : ''}</td>
+    <td class="small">${r.auto_out ? '<b style="color:var(--warn)">자동 퇴근</b>' : r.edit_note ? `수정: ${esc(r.edit_note)}` : ''}</td>
     <td><button class="btn sm" data-action="editAtt" data-id="${r.id}">수정</button></td></tr>`).join('');
 
   const waiting = state.profiles.filter((p) => p.approved === false).length;
+  const otHtml = otPending.length ? otPending.map((o) => {
+    const a = otAtt.find((x) => x.user_id === o.user_id && x.work_date === o.work_date);
+    return `<div class="card" style="border:1px solid var(--line);box-shadow:none;padding:14px;gap:8px">
+      <div class="row between"><b>${esc(nameOf(o.user_id))} · ${fmtMin(o.minutes)}</b><span class="sub">${md(o.work_date)}</span></div>
+      ${o.reason ? `<div class="small">내용: ${esc(o.reason)}</div>` : ''}
+      <div class="small">그날 기록: ${a ? `${fmtTime(a.clock_in)} – ${fmtTime(a.clock_out)}${a.auto_out ? ' (자동 퇴근)' : ''}` : '출퇴근 기록 없음'}</div>
+      <div class="grid2"><button class="btn primary" data-action="decideOt" data-id="${o.id}" data-s="approved">승인</button><button class="btn" data-action="decideOt" data-id="${o.id}" data-s="rejected">반려</button></div>
+    </div>`;
+  }).join('') : '<p class="sub">대기 중인 신청이 없어요</p>';
+  const otRows = people.map((p) => ({ p, m: otMonth.filter((o) => o.user_id === p.id).reduce((s2, o) => s2 + o.minutes, 0) }))
+    .filter((x) => x.m).map((x) => `<div><span>${esc(x.p.name)}</span><b>${fmtMin(x.m)}</b></div>`).join('');
   return `
   <h1>관리</h1>
   ${waiting ? `<div class="net no"><div><b>가입 승인 대기 ${waiting}명</b> — <button class="btn sm" data-action="tab" data-tab="people">직원·설정에서 승인하기</button></div></div>` : ''}
   <div class="grid3" style="grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px">
     <div class="stat"><span class="k">지금 근무 중</span><span class="v">${here.length} / ${people.length}명</span></div>
-    <div class="stat"><span class="k">승인 대기</span><span class="v" style="color:var(--warn)">${pending.length}건</span></div>
+    <div class="stat"><span class="k">승인 대기 (연차·추가근무)</span><span class="v" style="color:var(--warn)">${pending.length + otPending.length}건</span></div>
     <div class="stat"><span class="k">적용 연차 규정</span><span class="v" style="font-size:18px">${effectiveMode(state.settings, state.profiles) === 'legal' ? '근로기준법' : '병원 규정'}</span></div>
   </div>
   <div class="cols">
@@ -455,6 +494,9 @@ async function viewManage() {
     <section class="card narrow"><h2>연차 승인 대기</h2>${pendHtml}
       <h2 style="margin-top:8px">다가오는 확정 연차</h2>
       <div class="list">${others.filter((o) => LIVE.includes(o.status)).map((o) => `<div><span>${esc(nameOf(o.user_id))} · ${md(o.start_date)}${o.end_date !== o.start_date ? ` ~ ${md(o.end_date)}` : ''} ${KIND[o.kind]}</span><button class="btn sm danger" data-action="adminCancel" data-id="${o.id}">승인 취소</button></div>`).join('') || '<div><span class="sub">없어요</span></div>'}</div>
+      <h2 style="margin-top:8px">추가근무 승인 대기</h2>${otHtml}
+      <div class="row between" style="margin-top:8px"><h2>${Number(month.slice(5))}월 추가근무 (승인)</h2><button class="btn sm" data-action="otCsv">엑셀 받기</button></div>
+      <div class="list">${otRows || '<div><span class="sub">없어요</span></div>'}</div>
     </section>
   </div>
   <section class="card">
@@ -555,6 +597,7 @@ async function viewPeople() {
       <div class="grid2" style="grid-template-columns:repeat(auto-fit,minmax(200px,1fr))">
         <label class="f">1년 이상 직원 연간 연차 (일)<input type="number" name="custom_annual_days" value="${s.custom_annual_days}" step="0.5" min="0"></label>
         <label class="f">정규 근무시간 표시<input type="text" name="regular_hours" value="${esc(s.regular_hours)}"></label>
+        <label class="f">퇴근 미체크 시 자동 퇴근 시각<input type="time" name="work_end" value="${(s.work_end || '18:00').slice(0, 5)}"></label>
       </div>
       <label class="check"><input type="checkbox" name="use_duty" ${s.use_duty ? 'checked' : ''}>당직 사용 (근무표에 야간·주말 당직 표시)</label>
       <div class="f">1년 미만 직원 연차
@@ -722,6 +765,28 @@ const actions = {
     } catch (e) { toast(e.message); }
     renderView();
   },
+  async otFor(b) {
+    state.otDate = b.dataset.date;
+    await renderView();
+    document.getElementById('otForm')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  },
+  async cancelOt(b) {
+    try { must(await sb.from('overtime_requests').delete().eq('id', b.dataset.id)); toast('신청을 취소했어요'); } catch (e) { toast(e.message); }
+    renderView();
+  },
+  async decideOt(b) {
+    try {
+      must(await sb.from('overtime_requests').update({ status: b.dataset.s, decided_by: state.me.id, decided_at: new Date().toISOString() }).eq('id', b.dataset.id));
+      toast(b.dataset.s === 'approved' ? '추가근무를 승인했어요' : '반려했어요');
+    } catch (e) { toast(e.message); }
+    renderView();
+  },
+  async otCsv() {
+    const month = state.logMonth; const mStart = `${month}-01`;
+    const mEnd = addDays(addDays(mStart, 31).slice(0, 7) + '-01', -1);
+    const rows = must(await sb.from('overtime_requests').select('*').eq('status', 'approved').gte('work_date', mStart).lte('work_date', mEnd).order('work_date'));
+    downloadCsv(`추가근무_${month}.csv`, [['날짜', '이름', '시간(분)', '시간', '내용']].concat(rows.map((o) => [o.work_date, nameOf(o.user_id), o.minutes, fmtMin(o.minutes), o.reason || ''])));
+  },
   async requestCancel(b) {
     if (!(await ask('이 연차의 취소를 원장님께 요청할까요?', { ok: '취소 요청' }))) return;
     try { must(await sb.rpc('request_leave_cancel', { p_id: Number(b.dataset.id) })); toast('취소 요청을 보냈어요'); } catch (e) { toast(e.message); }
@@ -884,6 +949,16 @@ const forms = {
     state.session = session; state.tab = 'home';
     await loadBase(); render();
   },
+  async overtime(f) {
+    const date = f.date.value; const minutes = Number(f.minutes.value);
+    if (!date || date > kstToday()) return toast('날짜를 확인해 주세요');
+    try {
+      must(await sb.from('overtime_requests').insert({ user_id: state.me.id, work_date: date, minutes, reason: f.reason.value.trim() || null }));
+      toast(`${fmtMin(minutes)} 추가근무를 신청했어요`);
+      state.otDate = null;
+    } catch (e) { toast(e.message); }
+    renderView();
+  },
   async signup(f) {
     const body = { name: f.name.value.trim(), login_id: f.login_id.value.trim().toLowerCase(), password: f.password.value };
     if (body.password !== f.password2.value) return renderSignup('비밀번호가 서로 달라요.');
@@ -947,6 +1022,7 @@ const forms = {
       custom_first_year_days: Number(f.custom_first_year_days.value || 0),
       custom_seniority: f.custom_seniority.checked,
       regular_hours: f.regular_hours.value.trim() || '09:00–18:00',
+      work_end: f.work_end.value || '18:00',
       use_duty: f.use_duty.checked,
       updated_at: new Date().toISOString(),
     };
