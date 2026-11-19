@@ -229,3 +229,6 @@ drop policy if exists "lunch update" on public.lunch_expenses;
 create policy "lunch update" on public.lunch_expenses for update to authenticated
   using ((user_id = auth.uid() and public.is_member()) or public.is_admin())
   with check ((user_id = auth.uid() and public.is_member()) or public.is_admin());
+
+-- ───────── 고정 휴무 요일 ─────────
+alter table public.profiles add column if not exists weekly_off smallint[] not null default '{}';

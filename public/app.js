@@ -60,6 +60,14 @@ function activePeople() {
   return state.profiles.filter((p) => p.active && p.approved !== false).sort((a, b) => (a.role === b.role ? a.name.localeCompare(b.name, 'ko') : a.role === 'admin' ? -1 : 1));
 }
 
+// 그날의 실제 근무: 원장님이 직접 지정한 칸 > 고정 휴무 요일(휴무) > 기본(정규)
+function effShift(p, date, shifts) {
+  const sh = shifts.find((s) => s.user_id === p.id && s.work_date === date);
+  if (sh) return { kind: sh.kind, auto: false };
+  if ((p.weekly_off || []).includes(dowOf(date))) return { kind: 'off', auto: true };
+  return { kind: 'regular', auto: true };
+}
+
 let toastTimer;
 function toast(msg) {
   const t = document.getElementById('toast');
@@ -205,14 +213,14 @@ async function viewHome() {
   ]);
   const open = recs.find((r) => r.clock_in && !r.clock_out);
   const todayRec = recs.find((r) => r.work_date === today);
-  const todayShift = shifts.find((s) => s.work_date === today);
+  const todayShift = effShift(me, today, shifts);
   const todayLeave = leaves.find((l) => l.start_date <= today && l.end_date >= today);
   const nextDuty = shifts.find((s) => s.kind === 'night' || s.kind === 'weekend');
   const info = me.is_employee ? leaveInfo(me, state.settings, state.profiles, leaves, today) : null;
 
   let shiftText = '근무표 미정';
   if (todayLeave) shiftText = KIND[todayLeave.kind];
-  else if (todayShift) shiftText = todayShift.kind === 'regular' ? `${state.settings.regular_hours} · 정규` : SHIFT[todayShift.kind].label;
+  else shiftText = todayShift.kind === 'regular' ? `${state.settings.regular_hours} · 정규` : SHIFT[todayShift.kind].label;
 
   let btn;
   if (open) btn = `<button class="btn primary big" data-action="clock" data-dir="out" ${net.allowed ? '' : 'disabled'}>퇴근하기</button>`;
@@ -304,10 +312,11 @@ async function viewSchedule() {
     const w = dowOf(d);
     const chips = people.map((p) => {
       const lv = leaves.find((l) => l.user_id === p.id && l.start_date <= d && l.end_date >= d);
-      const sh = shifts.find((s) => s.user_id === p.id && s.work_date === d);
-      let cls = 's-none'; let label = '미정';
-      if (lv) { cls = 's-leave'; label = KIND[lv.kind]; }
-      if (sh && !(lv && lv.kind === 'full')) { cls = lv ? 's-leave' : SHIFT[sh.kind].cls; label = lv ? `${SHIFT[sh.kind].label}·${KIND[lv.kind]}` : SHIFT[sh.kind].label; }
+      const eff = effShift(p, d, shifts);
+      const sh = eff.auto ? null : eff;
+      const base = SHIFT[eff.kind].label + (eff.auto && eff.kind === 'off' ? '(고정)' : '');
+      let cls = SHIFT[eff.kind].cls; let label = base;
+      if (lv) { cls = 's-leave'; label = lv.kind === 'full' ? KIND[lv.kind] : `${base}·${KIND[lv.kind]}`; }
       const text = `${esc(p.name)}<br>${label}`;
       return admin
         ? `<button type="button" class="chip ${cls}" data-action="cycle" data-uid="${p.id}" data-date="${d}" data-kind="${sh?.kind || ''}" aria-label="${esc(p.name)} ${d} ${label}, 눌러서 변경">${text}</button>`
@@ -324,7 +333,7 @@ async function viewSchedule() {
     <button class="btn" data-action="week" data-n="7" aria-label="다음 주">›</button>
   </div>
   <div class="legend"><span><i class="s-reg"></i>정규</span><span><i class="s-duty"></i>당직</span><span><i class="s-leave"></i>연차·반차</span><span><i class="s-off"></i>휴무</span></div>
-  ${admin ? '<p class="small">칸을 누를 때마다 정규 → 야간당직 → 주말당직 → 휴무 → 미정 순서로 바뀌어요.</p>' : ''}
+  ${admin ? '<p class="small">고정 휴무 요일은 직원·설정에서 정해요. 칸을 누를 때마다 정규 → 야간당직 → 주말당직 → 휴무 → 자동(기본값) 순서로 바뀌어요.</p>' : ''}
   <section class="card" style="padding:6px 16px">${dayHtml}</section>
   ${ws !== mondayOf(today) ? '<button class="btn" data-action="thisWeek">이번 주로</button>' : ''}`;
 }
@@ -350,9 +359,9 @@ async function viewManage() {
 
   const todayRows = people.map((p) => {
     const a = todayAtt.find((x) => x.user_id === p.id) || openAtt.find((x) => x.user_id === p.id);
-    const sh = todayShifts.find((s) => s.user_id === p.id);
+    const sh = effShift(p, today, todayShifts);
     const lv = approved.find((l) => l.user_id === p.id && l.start_date <= today && l.end_date >= today);
-    return `<tr><td><b>${esc(p.name)}</b></td><td>${lv ? KIND[lv.kind] : sh ? SHIFT[sh.kind].label : '<span class="sub">미정</span>'}</td><td>${fmtTime(a?.clock_in)}</td><td>${fmtTime(a?.clock_out)}</td></tr>`;
+    return `<tr><td><b>${esc(p.name)}</b></td><td>${lv ? KIND[lv.kind] : SHIFT[sh.kind].label}</td><td>${fmtTime(a?.clock_in)}</td><td>${fmtTime(a?.clock_out)}</td></tr>`;
   }).join('');
 
   const pendHtml = pending.length ? pending.map((l) => {
@@ -448,6 +457,7 @@ async function viewPeople() {
       <td><select name="role" aria-label="권한"><option value="staff" ${p.role === 'staff' ? 'selected' : ''}>직원</option><option value="admin" ${p.role === 'admin' ? 'selected' : ''}>원장(관리)</option></select></td>
       <td><input type="date" name="hire_date" value="${p.hire_date || ''}" aria-label="입사일"></td>
       <td><label class="check"><input type="checkbox" name="is_employee" ${p.is_employee ? 'checked' : ''}>근로자</label><label class="check"><input type="checkbox" name="active" ${p.active ? 'checked' : ''}>재직</label></td>
+      <td><div class="days">${[1, 2, 3, 4, 5, 6, 0].map((w) => `<label title="${DOW[w]}요일 고정 휴무"><input type="checkbox" name="off${w}" ${(p.weekly_off || []).includes(w) ? 'checked' : ''}>${DOW[w]}</label>`).join('')}</div></td>
       <td><input type="number" name="leave_adjust" value="${p.leave_adjust}" step="0.5" aria-label="연차 가감" style="width:80px"></td>
       <td class="small">${info ? `${num(info.granted)} / ${num(info.used)} / <b>${num(info.remain)}</b>` : '—'}</td>
       <td><div class="row" style="gap:6px"><button class="btn sm primary" data-action="saveProfile" data-id="${p.id}">저장</button><button class="btn sm" data-action="resetPw" data-id="${p.id}">비번 변경</button></div></td>
@@ -459,8 +469,8 @@ async function viewPeople() {
   ${pendingHtml}
   <section class="card">
     <h2>직원</h2>
-    <p class="small">근로자: 5인 계산과 연차 대상인 직원(대표원장은 해제). 연차 가감: 이월·포상 등 수동 조정. 연차 칸은 발생 / 사용 / 잔여.</p>
-    <div class="tbl-wrap"><table style="min-width:900px"><thead><tr><th>이름</th><th>직군</th><th>권한</th><th>입사일</th><th>구분</th><th>연차 가감</th><th>연차</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
+    <p class="small">고정 휴무 요일: 체크한 요일은 근무표에 자동으로 '휴무', 나머지는 '정규'로 들어가요. 근로자: 5인 계산과 연차 대상인 직원(대표원장은 해제). 연차 가감: 이월·포상 등 수동 조정. 연차 칸은 발생 / 사용 / 잔여.</p>
+    <div class="tbl-wrap"><table style="min-width:1100px"><thead><tr><th>이름</th><th>직군</th><th>권한</th><th>입사일</th><th>구분</th><th>고정 휴무 요일</th><th>연차 가감</th><th>연차</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
   </section>
   <form class="card" data-form="newUser">
     <h2>직원 추가</h2>
@@ -674,6 +684,7 @@ const actions = {
       name: v('name').value.trim(), job: v('job').value.trim(), role: v('role').value,
       hire_date: v('hire_date').value || null, is_employee: v('is_employee').checked,
       active: v('active').checked, leave_adjust: Number(v('leave_adjust').value || 0),
+      weekly_off: [0, 1, 2, 3, 4, 5, 6].filter((w) => v(`off${w}`).checked),
     };
     if (b.dataset.id === state.me.id && (patch.role !== 'admin' || !patch.active)) return toast('본인의 원장 권한은 해제할 수 없어요');
     try { must(await sb.from('profiles').update(patch).eq('id', b.dataset.id)); await refreshBase(); toast('저장했어요'); } catch (e) { toast(e.message); }
@@ -798,7 +809,9 @@ const forms = {
     const start = f.start.value; const end = kind === 'full' ? f.end.value : start;
     if (!start || end < start) return toast('날짜를 확인해 주세요');
     if (daysBetween(start, end) > 60) return toast('한 번에 60일까지 신청할 수 있어요');
-    const offs = must(await sb.from('shifts').select('work_date').eq('user_id', state.me.id).eq('kind', 'off').gte('work_date', start).lte('work_date', end)).map((s) => s.work_date);
+    const myShifts = must(await sb.from('shifts').select('*').eq('user_id', state.me.id).gte('work_date', start).lte('work_date', end));
+    const offs = [];
+    for (let d = start; d <= end; d = addDays(d, 1)) if (effShift(state.me, d, myShifts).kind === 'off') offs.push(d);
     const days = requestDays(kind, start, end, offs);
     if (days <= 0) return toast('선택한 날이 모두 휴무예요');
     try {
