@@ -21,6 +21,7 @@ const ICON = {
   grid: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>',
   check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 11l3 3 8-8"/><path d="M20 12v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h9"/></svg>',
   users: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="8" r="4"/><path d="M2 21a7 7 0 0 1 14 0"/><path d="M16 3.5a4 4 0 0 1 0 9"/><path d="M22 21a7 7 0 0 0-4-6.3"/></svg>',
+  meal: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 2v20"/><path d="M4 2v6a3 3 0 0 0 6 0V2"/><path d="M17 22V2c-2.2 0-4 2.7-4 6s1.8 5 4 5"/></svg>',
   wifi: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg>',
 };
 
@@ -28,17 +29,22 @@ const TABS_STAFF = [
   { id: 'home', label: '출퇴근', icon: 'clock' },
   { id: 'leave', label: '연차', icon: 'cal' },
   { id: 'schedule', label: '근무표', icon: 'grid' },
+  { id: 'lunch', label: '점심', icon: 'meal' },
 ];
 const TABS_ADMIN = [
   ...TABS_STAFF,
   { id: 'manage', label: '관리', icon: 'check' },
-  { id: 'people', label: '직원·설정', icon: 'users' },
+  { id: 'people', label: '직원·설정', short: '설정', icon: 'users' },
 ];
+const DEVICE_KEY = 'orae_device_token';
+function getDeviceToken() { try { return localStorage.getItem(DEVICE_KEY); } catch { return null; } }
+function setDeviceToken(t) { try { t ? localStorage.setItem(DEVICE_KEY, t) : localStorage.removeItem(DEVICE_KEY); } catch { /* 저장 불가 브라우저 */ } }
 
 let sb;
 const state = {
   session: null, me: null, profiles: [], settings: null,
   tab: 'home', weekStart: null, leaveKind: 'full', logMonth: null, logUser: '',
+  lunchMonth: null, lunchEdit: null,
 };
 const $app = document.getElementById('app');
 
@@ -79,6 +85,7 @@ async function boot() {
     const cfg = await fetch('/api/config').then((r) => r.json());
     if (!cfg.url || !cfg.anonKey) throw new Error('config');
     sb = createClient(cfg.url, cfg.anonKey);
+    startHeartbeat();
   } catch {
     $app.innerHTML = '<div class="login"><div class="card"><h2>설정이 필요해요</h2><p class="sub">Vercel 환경변수(SUPABASE_URL, SUPABASE_ANON_KEY)를 확인해 주세요.</p></div></div>';
     return;
@@ -139,7 +146,7 @@ function render() {
       <div class="who">${esc(state.me.name)} ${isAdmin() ? '원장' : ''}<button class="btn sm ghost" data-action="logout">로그아웃</button></div>
     </div></header>
     <main id="view"><div class="loading">불러오는 중…</div></main>
-    <nav class="tabbar" aria-label="메뉴">${tabs.map((t) => `${navBtn(t)}${ICON[t.icon]}${t.label}</button>`).join('')}</nav>
+    <nav class="tabbar" aria-label="메뉴">${tabs.map((t) => `${navBtn(t)}${ICON[t.icon]}${t.short || t.label}</button>`).join('')}</nav>
   </div>`;
   renderView();
 }
@@ -147,7 +154,7 @@ function render() {
 async function renderView() {
   const el = document.getElementById('view');
   if (!el) return;
-  const views = { home: viewHome, leave: viewLeave, schedule: viewSchedule, manage: viewManage, people: viewPeople };
+  const views = { home: viewHome, leave: viewLeave, schedule: viewSchedule, lunch: viewLunch, manage: viewManage, people: viewPeople };
   try {
     el.innerHTML = await views[state.tab]();
   } catch (e) {
@@ -375,7 +382,23 @@ async function viewPeople() {
   const count = employeeCount(state.profiles);
   const mode = effectiveMode(s, state.profiles);
   const forced = count >= Number(s.legal_threshold);
-  const net = await api('/api/clock').catch(() => ({}));
+  const [net, devices] = await Promise.all([
+    api('/api/clock').catch(() => ({})),
+    sb.from('hospital_devices').select('id,name,last_ip,last_seen').order('created_at').then(must).catch(() => []),
+  ]);
+  const thisIsDevice = !!getDeviceToken();
+  const ago = (iso) => {
+    if (!iso) return '—';
+    const m = Math.round((Date.now() - new Date(iso)) / 60000);
+    return m < 1 ? '방금' : m < 60 ? `${m}분 전` : m < 1440 ? `${Math.round(m / 60)}시간 전` : `${Math.round(m / 1440)}일 전`;
+  };
+  const deviceHtml = `
+    <h2 style="margin-top:8px">자동 갱신 병원 기기</h2>
+    <p class="small">병원 PC를 등록하고 이 사이트를 켜두면, 병원 인터넷 주소가 바뀌어도 몇 분 안에 자동으로 새 주소가 적용돼요.</p>
+    ${thisIsDevice
+      ? '<div class="net ok">' + ICON.wifi + '<div><b>이 기기는 병원 기기로 등록되어 있어요</b><div class="small">이 창을 켜두면 자동으로 갱신돼요</div></div></div>'
+      : '<button class="btn primary" data-action="registerDevice">이 기기를 병원 기기로 등록</button><p class="small">병원 Wi-Fi(인터넷)에 연결된, 항상 켜두는 PC에서 누르세요.</p>'}
+    <div class="list">${devices.length ? devices.map((d) => `<div><span>${esc(d.name)}<br><span class="small">${esc(d.last_ip || '')} · ${ago(d.last_seen)}</span></span><button class="btn sm ghost danger" data-action="removeDevice" data-id="${d.id}">해제</button></div>`).join('') : '<div><span class="sub">등록된 병원 기기가 없어요</span></div>'}</div>`;
 
   const rows = [...state.profiles].sort((a, b) => Number(b.active) - Number(a.active) || a.name.localeCompare(b.name, 'ko')).map((p) => {
     const info = p.is_employee ? leaveInfo(p, s, state.profiles, approved) : null;
@@ -434,8 +457,100 @@ async function viewPeople() {
       <button class="btn primary" data-action="addIp" data-ip="${esc(net.ip || '')}" ${net.ip && !net.allowed ? '' : 'disabled'}>지금 네트워크 등록</button>
       <div class="list">${(s.allowed_ips || []).map((ip) => `<div><span>${esc(ip)}</span><button class="btn sm ghost danger" data-action="removeIp" data-ip="${esc(ip)}">삭제</button></div>`).join('') || '<div><span class="sub">등록된 주소가 없어요 — 아직 아무도 출근 체크를 할 수 없어요</span></div>'}</div>
       <form class="row" data-form="manualIp" style="gap:8px"><input type="text" name="ip" placeholder="직접 입력 (예: 211.234.1.10)" aria-label="IP 직접 입력" style="flex:1"><button class="btn sm" type="submit">추가</button></form>
+      ${deviceHtml}
     </section>
   </div>`;
+}
+
+// ───────── 점심값 ─────────
+const won = (n) => `${Number(n || 0).toLocaleString('ko-KR')}원`;
+function lunchSupport() { return Number(state.settings?.lunch_support ?? 8000); }
+function lunchSplit(amount, support) {
+  const a = Number(amount) || 0;
+  return { sup: Math.min(a, support), over: Math.max(0, a - support) };
+}
+function monthRange(month) { const s = `${month}-01`; return [s, addDays(addDays(s, 31).slice(0, 7) + '-01', -1)]; }
+function lunchTotals(rows, S) {
+  return rows.reduce((t, r) => { const x = lunchSplit(r.amount, S); t.n++; t.total += Number(r.amount); t.sup += x.sup; t.over += x.over; return t; }, { n: 0, total: 0, sup: 0, over: 0 });
+}
+
+async function viewLunch() {
+  const today = kstToday();
+  const month = state.lunchMonth || today.slice(0, 7);
+  state.lunchMonth = month;
+  const [ms, me] = monthRange(month);
+  const S = lunchSupport();
+  const mine = must(await sb.from('lunch_expenses').select('*').eq('user_id', state.me.id).gte('spend_date', ms).lte('spend_date', me).order('spend_date', { ascending: false }));
+  const t = lunchTotals(mine, S);
+  const ed = state.lunchEdit;
+
+  let adminHtml = '';
+  if (isAdmin()) {
+    const all = must(await sb.from('lunch_expenses').select('*').gte('spend_date', ms).lte('spend_date', me));
+    const people = activePeople();
+    const sumAll = lunchTotals(all, S);
+    const rows = people.map((p) => {
+      const x = lunchTotals(all.filter((r) => r.user_id === p.id), S);
+      return `<tr><td><b>${esc(p.name)}</b></td><td>${x.n}일</td><td>${won(x.total)}</td><td>${won(x.sup)}</td><td><b>${won(x.over)}</b></td></tr>`;
+    }).join('');
+    adminHtml = `
+    <section class="card">
+      <div class="row between"><h2>직원별 합계 · ${Number(month.slice(5))}월</h2><button class="btn sm" data-action="lunchCsv">엑셀(CSV) 받기</button></div>
+      <div class="tbl-wrap"><table style="min-width:520px"><thead><tr><th>이름</th><th>입력</th><th>총 사용</th><th>병원 지원</th><th>본인 부담</th></tr></thead>
+      <tbody>${rows}<tr><td><b>합계</b></td><td>${sumAll.n}일</td><td><b>${won(sumAll.total)}</b></td><td><b>${won(sumAll.sup)}</b></td><td><b>${won(sumAll.over)}</b></td></tr></tbody></table></div>
+      <form class="row" data-form="lunchSupport" style="gap:8px">
+        <label class="f" style="flex:1;min-width:180px">1일 지원 한도 (원)<input type="number" name="support" value="${S}" min="0" step="500" inputmode="numeric"></label>
+        <button class="btn sm" type="submit" style="align-self:flex-end;min-height:44px">저장</button>
+      </form>
+    </section>`;
+  }
+
+  return `
+  <div class="row between"><h1>점심</h1>
+    <input type="month" value="${month}" data-change="lunchMonth" aria-label="월 선택" style="width:auto"></div>
+  <div class="hero"><div class="grid3">
+    <div><div class="k">이번 달 사용</div><div class="v">${won(t.total)}</div></div>
+    <div><div class="k">병원 지원</div><div class="v">${won(t.sup)}</div></div>
+    <div><div class="k">본인 부담</div><div class="v">${won(t.over)}</div></div></div>
+    <div class="k" style="margin-top:8px">하루 ${won(S)}까지 지원 · 넘는 금액은 본인 부담으로 합산돼요</div></div>
+  <form class="card" data-form="lunch">
+    <h2>${ed ? '수정하기' : '오늘 점심 입력'}</h2>
+    <div class="grid2">
+      <label class="f">날짜<input type="date" name="date" value="${ed?.spend_date || today}" max="${today}" required></label>
+      <label class="f">금액 (원)<input type="number" name="amount" value="${ed?.amount ?? ''}" min="0" max="1000000" step="100" inputmode="numeric" placeholder="예: 9500" required></label>
+    </div>
+    <label class="f">메뉴·메모 (선택)<input type="text" name="memo" maxlength="60" value="${esc(ed?.memo || '')}" placeholder="예: 김치찌개"></label>
+    <p class="small">같은 날짜를 다시 입력하면 새 금액으로 바뀌어요.</p>
+    <div class="row"><button class="btn primary" type="submit" style="flex:1;min-height:52px">저장</button>
+    ${ed ? '<button class="btn" type="button" data-action="lunchCancel">취소</button>' : ''}</div>
+  </form>
+  <section class="card">
+    <h2>${Number(month.slice(5))}월 내 기록</h2>
+    <div class="list">${mine.length ? mine.map((r) => {
+      const x = lunchSplit(r.amount, S);
+      return `<div><span>${md(r.spend_date)} <b>${won(r.amount)}</b>${r.memo ? ` <span class="small">${esc(r.memo)}</span>` : ''}${x.over ? `<br><span class="small" style="color:var(--warn)">본인 부담 ${won(x.over)}</span>` : ''}</span>
+      <span class="row" style="gap:4px"><button class="btn sm ghost" data-action="lunchEditStart" data-id="${r.id}">수정</button><button class="btn sm ghost danger" data-action="deleteLunch" data-id="${r.id}">삭제</button></span></div>`;
+    }).join('') : '<div><span class="sub">입력한 기록이 없어요</span></div>'}</div>
+  </section>
+  ${adminHtml}`;
+}
+
+// ───────── 병원 기기: 공인 IP 자동 알림 ─────────
+let heartbeatOn = false;
+function startHeartbeat() {
+  if (heartbeatOn || !getDeviceToken()) return;
+  heartbeatOn = true;
+  const beat = () => {
+    const token = getDeviceToken();
+    if (!token) return;
+    fetch('/api/device', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'beat', token }) })
+      .then((r) => { if (r.status === 404) setDeviceToken(null); })
+      .catch(() => {});
+  };
+  beat();
+  setInterval(beat, 3 * 60 * 1000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) beat(); });
+  window.addEventListener('online', beat);
 }
 
 // ───────── 동작 ─────────
@@ -528,6 +643,39 @@ const actions = {
     if (!pw) return;
     try { await api('/api/users', { method: 'PUT', body: JSON.stringify({ user_id: b.dataset.id, password: pw }) }); toast('비밀번호를 바꿨어요'); } catch (e) { toast(e.message); }
   },
+  async registerDevice() {
+    const name = window.prompt('이 기기 이름 (예: 데스크 PC)', '데스크 PC');
+    if (name === null) return;
+    try {
+      const r = await api('/api/device', { method: 'POST', body: JSON.stringify({ action: 'register', name }) });
+      setDeviceToken(r.token);
+      startHeartbeat();
+      toast('병원 기기로 등록했어요');
+    } catch (e) { toast(e.message); }
+    renderView();
+  },
+  async removeDevice(b) {
+    try { must(await sb.from('hospital_devices').delete().eq('id', b.dataset.id)); toast('해제했어요'); } catch (e) { toast(e.message); }
+    renderView();
+  },
+  async lunchEditStart(b) {
+    try { state.lunchEdit = must(await sb.from('lunch_expenses').select('*').eq('id', b.dataset.id).single()); } catch (e) { toast(e.message); }
+    await renderView(); window.scrollTo({ top: 0, behavior: 'smooth' });
+  },
+  lunchCancel() { state.lunchEdit = null; renderView(); },
+  async deleteLunch(b) {
+    try { must(await sb.from('lunch_expenses').delete().eq('id', b.dataset.id)); toast('삭제했어요'); } catch (e) { toast(e.message); }
+    if (state.lunchEdit?.id === Number(b.dataset.id)) state.lunchEdit = null;
+    renderView();
+  },
+  async lunchCsv() {
+    const [ms, me] = monthRange(state.lunchMonth);
+    const S = lunchSupport();
+    const rows = must(await sb.from('lunch_expenses').select('*').gte('spend_date', ms).lte('spend_date', me).order('spend_date'));
+    const lines = [['날짜', '이름', '금액', '병원 지원', '본인 부담', '메모']]
+      .concat(rows.map((r) => { const x = lunchSplit(r.amount, S); return [r.spend_date, nameOf(r.user_id), r.amount, x.sup, x.over, r.memo || '']; }));
+    downloadCsv(`점심값_${state.lunchMonth}.csv`, lines);
+  },
   async addIp(b) { await saveIps([...(state.settings.allowed_ips || []), b.dataset.ip]); },
   async removeIp(b) { await saveIps((state.settings.allowed_ips || []).filter((x) => x !== b.dataset.ip)); },
 };
@@ -539,6 +687,13 @@ async function saveIps(list) {
     await refreshBase(); toast('네트워크 설정을 저장했어요');
   } catch (e) { toast(e.message); }
   renderView();
+}
+
+function downloadCsv(filename, lines) {
+  const text = '﻿' + lines.map((l) => l.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\r\n');
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([text], { type: 'text/csv;charset=utf-8' }));
+  a.download = filename; a.click();
 }
 
 function toHHMM(iso) { return iso ? fmtTime(iso) : ''; }
@@ -626,6 +781,32 @@ const forms = {
     try { must(await sb.from('settings').update(patch).eq('id', 1)); await refreshBase(); toast('연차 규정을 저장했어요'); } catch (e) { toast(e.message); }
     renderView();
   },
+  async lunch(f) {
+    const date = f.date.value;
+    const amount = Math.round(Number(f.amount.value));
+    if (!date || date > kstToday()) return toast('날짜를 확인해 주세요');
+    if (!Number.isFinite(amount) || amount < 0 || amount > 1000000) return toast('금액을 확인해 주세요');
+    const uid = state.lunchEdit?.user_id || state.me.id;
+    try {
+      if (state.lunchEdit && state.lunchEdit.spend_date !== date) {
+        must(await sb.from('lunch_expenses').delete().eq('id', state.lunchEdit.id));
+      }
+      must(await sb.from('lunch_expenses').upsert(
+        { user_id: uid, spend_date: date, amount, memo: f.memo.value.trim() || null, updated_at: new Date().toISOString() },
+        { onConflict: 'user_id,spend_date' },
+      ));
+      const over = lunchSplit(amount, lunchSupport()).over;
+      toast(over ? `저장했어요 · 본인 부담 ${won(over)}` : '저장했어요');
+      state.lunchEdit = null;
+    } catch (e) { toast(e.message); }
+    renderView();
+  },
+  async lunchSupport(f) {
+    const v = Math.round(Number(f.support.value));
+    if (!Number.isFinite(v) || v < 0) return toast('금액을 확인해 주세요');
+    try { must(await sb.from('settings').update({ lunch_support: v, updated_at: new Date().toISOString() }).eq('id', 1)); await refreshBase(); toast('지원 한도를 저장했어요'); } catch (e) { toast(e.message); }
+    renderView();
+  },
   async manualIp(f) { const ip = f.ip.value.trim(); if (ip) await saveIps([...(state.settings.allowed_ips || []), ip]); },
 };
 
@@ -647,6 +828,7 @@ document.addEventListener('change', (e) => {
   if (!el) return;
   if (el.dataset.change === 'logMonth') state.logMonth = el.value || null;
   if (el.dataset.change === 'logUser') state.logUser = el.value;
+  if (el.dataset.change === 'lunchMonth') { state.lunchMonth = el.value || null; state.lunchEdit = null; }
   renderView();
 });
 

@@ -122,3 +122,5 @@ button.chip{cursor:pointer}
 #toast.show{opacity:1}
 .err{color:var(--danger);font-size:13px}
 .hide{display:none!important}
+td .check{white-space:nowrap}
+td select{min-width:120px}

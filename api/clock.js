@@ -1,4 +1,4 @@
-import { admin, authUser, profileOf, clientIp, ipAllowed, kstDate, readBody } from './_lib.js';
+import { admin, authUser, profileOf, clientIp, ipAllowed, allowedIps, kstDate, readBody } from './_lib.js';
 
 // GET  /api/clock  → 지금 병원 네트워크인지 확인 { ip, allowed }
 // POST /api/clock  { action: 'in' | 'out' } → 출근/퇴근 기록
@@ -10,8 +10,7 @@ export default async function handler(req, res) {
     if (!prof || !prof.active) return res.status(403).json({ error: '사용할 수 없는 계정입니다.' });
 
     const ip = clientIp(req);
-    const { data: s } = await admin.from('settings').select('allowed_ips').eq('id', 1).single();
-    const allowed = ipAllowed(ip, s?.allowed_ips);
+    const allowed = ipAllowed(ip, await allowedIps());
 
     if (req.method === 'GET') return res.status(200).json({ ip, allowed });
     if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });

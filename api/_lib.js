@@ -38,6 +38,16 @@ export function ipAllowed(ip, list) {
   });
 }
 
+// 허용 주소 = 원장이 직접 등록한 주소 + 최근 7일 안에 신호를 보낸 병원 기기의 현재 주소
+export async function allowedIps() {
+  const since = new Date(Date.now() - 7 * 86400000).toISOString();
+  const [{ data: s }, { data: devs }] = await Promise.all([
+    admin.from('settings').select('allowed_ips').eq('id', 1).single(),
+    admin.from('hospital_devices').select('last_ip').gte('last_seen', since),
+  ]);
+  return [...(s?.allowed_ips || []), ...(devs || []).map((d) => d.last_ip).filter(Boolean)];
+}
+
 // 한국 시간 기준 오늘 날짜 (YYYY-MM-DD)
 export function kstDate(d = new Date()) {
   return d.toLocaleDateString('sv-SE', { timeZone: 'Asia/Seoul' });
