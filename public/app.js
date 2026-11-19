@@ -209,14 +209,21 @@ async function viewHome() {
   const [net, recs, shifts, leaves] = await Promise.all([
     api('/api/clock').catch((e) => ({ error: e.message })),
     sb.from('attendance').select('*').eq('user_id', me.id).gte('work_date', addDays(today, -14)).order('work_date', { ascending: false }).then(must),
-    sb.from('shifts').select('*').eq('user_id', me.id).gte('work_date', today).lte('work_date', addDays(today, 6)).order('work_date').then(must),
+    sb.from('shifts').select('*').eq('user_id', me.id).gte('work_date', today).lte('work_date', addDays(today, 13)).order('work_date').then(must),
     approvedLeaves(me.id),
   ]);
   const open = recs.find((r) => r.clock_in && !r.clock_out);
   const todayRec = recs.find((r) => r.work_date === today);
   const todayShift = effShift(me, today, shifts);
   const todayLeave = leaves.find((l) => l.start_date <= today && l.end_date >= today);
-  const nextDuty = shifts.find((s) => s.kind === 'night' || s.kind === 'weekend');
+  const useDuty = !!state.settings.use_duty;
+  const nextDuty = useDuty ? shifts.find((s) => s.kind === 'night' || s.kind === 'weekend') : null;
+  let nextOff = null;
+  for (let i = 1; i <= 13 && !nextOff; i++) {
+    const d = addDays(today, i);
+    const onLeave = leaves.some((l) => l.kind === 'full' && l.start_date <= d && l.end_date >= d);
+    if (onLeave || effShift(me, d, shifts).kind === 'off') nextOff = { date: d, label: onLeave ? '연차' : '휴무' };
+  }
   const info = me.track_leave !== false ? leaveInfo(me, state.settings, state.profiles, leaves, today) : null;
 
   let shiftText = '근무표 미정';
@@ -248,7 +255,9 @@ async function viewHome() {
   </section>
   <div class="grid2">
     <div class="stat"><span class="k">남은 연차</span><span class="v" style="color:var(--primary)">${info ? `${num(info.remain)}일` : '—'}</span></div>
-    <div class="stat"><span class="k">다가오는 당직</span><span class="v" style="font-size:18px">${nextDuty ? `${md(nextDuty.work_date)}<br><span class="small">${SHIFT[nextDuty.kind].label}</span>` : '없음'}</span></div>
+    ${useDuty
+      ? `<div class="stat"><span class="k">다가오는 당직</span><span class="v" style="font-size:18px">${nextDuty ? `${md(nextDuty.work_date)}<br><span class="small">${SHIFT[nextDuty.kind].label}</span>` : '없음'}</span></div>`
+      : `<div class="stat"><span class="k">다음 쉬는 날</span><span class="v" style="font-size:18px">${nextOff ? `${md(nextOff.date)}<br><span class="small">${nextOff.label}</span>` : '2주 안에 없음'}</span></div>`}
   </div>
   <section class="card">
     <h2>최근 기록</h2>
@@ -334,8 +343,8 @@ async function viewSchedule() {
     <b>${md(ws)} – ${md(we)}</b>
     <button class="btn" data-action="week" data-n="7" aria-label="다음 주">›</button>
   </div>
-  <div class="legend"><span><i class="s-reg"></i>정규</span><span><i class="s-duty"></i>당직</span><span><i class="s-leave"></i>연차·반차</span><span><i class="s-off"></i>휴무</span></div>
-  ${admin ? '<p class="small">고정 휴무 요일은 직원·설정에서 정해요. 칸을 누를 때마다 정규 → 야간당직 → 주말당직 → 휴무 → 자동(기본값) 순서로 바뀌어요.</p>' : ''}
+  <div class="legend"><span><i class="s-reg"></i>정규</span>${state.settings.use_duty ? '<span><i class="s-duty"></i>당직</span>' : ''}<span><i class="s-leave"></i>연차·반차</span><span><i class="s-off"></i>휴무</span></div>
+  ${admin ? `<p class="small">고정 휴무 요일은 직원·설정에서 정해요. 칸을 누를 때마다 ${state.settings.use_duty ? '정규 → 야간당직 → 주말당직 → 휴무' : '정규 → 휴무'} → 자동(기본값) 순서로 바뀌어요.</p>` : ''}
   <section class="card" style="padding:6px 16px">${dayHtml}</section>
   ${ws !== mondayOf(today) ? '<button class="btn" data-action="thisWeek">이번 주로</button>' : ''}`;
 }
@@ -508,6 +517,7 @@ async function viewPeople() {
         <label class="f">1년 이상 직원 연간 연차 (일)<input type="number" name="custom_annual_days" value="${s.custom_annual_days}" step="0.5" min="0"></label>
         <label class="f">정규 근무시간 표시<input type="text" name="regular_hours" value="${esc(s.regular_hours)}"></label>
       </div>
+      <label class="check"><input type="checkbox" name="use_duty" ${s.use_duty ? 'checked' : ''}>당직 사용 (근무표에 야간·주말 당직 표시)</label>
       <div class="f">1년 미만 직원 연차
         <label class="check"><input type="radio" name="first_year" value="monthly" ${!s.custom_first_year_upfront && s.custom_first_year_monthly ? 'checked' : ''}>한 달 근무마다 1일씩 생김 (최대 11일)</label>
         <label class="check"><input type="radio" name="first_year" value="upfront" ${s.custom_first_year_upfront ? 'checked' : ''}>입사할 때 <input type="number" name="custom_first_year_days" value="${s.custom_first_year_days ?? 11}" min="0" step="0.5" style="width:70px;min-height:32px;margin:0 4px">일 한 번에 지급</label>
@@ -644,7 +654,8 @@ const actions = {
   thisWeek() { state.weekStart = null; renderView(); },
   async cycle(b) {
     const cur = b.dataset.kind || null;
-    const next = CYCLE[(CYCLE.indexOf(cur) + 1) % CYCLE.length];
+    const cyc = state.settings.use_duty ? CYCLE : [null, 'regular', 'off'];
+    const next = cyc[(Math.max(0, cyc.indexOf(cur)) + 1) % cyc.length];
     const { uid, date } = b.dataset;
     b.disabled = true;
     try {
@@ -888,6 +899,7 @@ const forms = {
       custom_first_year_days: Number(f.custom_first_year_days.value || 0),
       custom_seniority: f.custom_seniority.checked,
       regular_hours: f.regular_hours.value.trim() || '09:00–18:00',
+      use_duty: f.use_duty.checked,
       updated_at: new Date().toISOString(),
     };
     try { must(await sb.from('settings').update(patch).eq('id', 1)); await refreshBase(); toast('연차 규정을 저장했어요'); } catch (e) { toast(e.message); }

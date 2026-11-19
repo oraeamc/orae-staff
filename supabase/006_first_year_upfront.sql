@@ -6,3 +6,6 @@ alter table public.profiles add column if not exists leave_adjust_period date;  
 
 -- 연차 관리 대상(근로자 여부와 별개)
 alter table public.profiles add column if not exists track_leave boolean not null default true;
+
+-- 당직 사용 여부 (기본: 사용 안 함)
+alter table public.settings add column if not exists use_duty boolean not null default false;
