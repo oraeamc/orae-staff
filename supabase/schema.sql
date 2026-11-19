@@ -166,3 +166,9 @@ alter table public.hospital_devices enable row level security;
 -- 원장만 목록 보기·삭제. 등록·갱신은 서버만.
 create policy "devices admin read" on public.hospital_devices for select to authenticated using (public.is_admin());
 create policy "devices admin delete" on public.hospital_devices for delete to authenticated using (public.is_admin());
+
+-- ───────── 권한 (새 Supabase 프로젝트는 자동으로 주지 않음) ─────────
+grant usage on schema public to authenticated, service_role;
+grant select, insert, update, delete on public.profiles, public.settings, public.attendance, public.leave_requests, public.shifts, public.lunch_expenses, public.hospital_devices to authenticated, service_role;
+grant usage, select on all sequences in schema public to authenticated, service_role;
+grant execute on function public.is_admin() to authenticated, service_role;
