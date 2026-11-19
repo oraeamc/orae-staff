@@ -8,6 +8,7 @@ export default async function handler(req, res) {
     if (!user) return res.status(401).json({ error: '로그인이 필요합니다.' });
     const prof = await profileOf(user.id);
     if (!prof || !prof.active) return res.status(403).json({ error: '사용할 수 없는 계정입니다.' });
+    if (prof.approved === false) return res.status(403).json({ error: '원장님 승인 후 사용할 수 있어요.' });
 
     const ip = clientIp(req);
     const allowed = ipAllowed(ip, await allowedIps());

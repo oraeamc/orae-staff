@@ -15,7 +15,7 @@ export default async function handler(req, res) {
     if (b.action === 'register') {
       const user = await authUser(req);
       const me = user && (await profileOf(user.id));
-      if (!me || me.role !== 'admin' || !me.active) return res.status(403).json({ error: '원장 권한이 필요합니다.' });
+      if (!me || me.role !== 'admin' || !me.active || me.approved === false) return res.status(403).json({ error: '원장 권한이 필요합니다.' });
       const token = crypto.randomBytes(32).toString('hex');
       const { error } = await admin.from('hospital_devices').insert({
         name: String(b.name || '병원 기기').slice(0, 40), token_hash: sha(token), last_ip: ip, last_seen: now, created_by: me.id,

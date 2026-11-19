@@ -28,7 +28,7 @@ export function daysBetween(a, b) { return Math.round((parseD(b) - parseD(a)) / 
 
 // 근로자 수(대표 제외, 재직 중)
 export function employeeCount(profiles) {
-  return profiles.filter((p) => p.is_employee && p.active).length;
+  return profiles.filter((p) => p.is_employee && p.active && p.approved !== false).length;
 }
 
 // 실제 적용되는 규정: 근로자가 기준(기본 5명) 이상이면 원장 설정과 관계없이 법 기준

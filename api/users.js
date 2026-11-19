@@ -10,7 +10,7 @@ export default async function handler(req, res) {
     const user = await authUser(req);
     if (!user) return res.status(401).json({ error: '로그인이 필요합니다.' });
     const me = await profileOf(user.id);
-    if (!me || me.role !== 'admin' || !me.active) return res.status(403).json({ error: '원장 권한이 필요합니다.' });
+    if (!me || me.role !== 'admin' || !me.active || me.approved === false) return res.status(403).json({ error: '원장 권한이 필요합니다.' });
 
     const b = readBody(req);
 
@@ -50,6 +50,16 @@ export default async function handler(req, res) {
         return res.status(400).json({ error: '비밀번호는 8자 이상이어야 해요.' });
       }
       const { error } = await admin.auth.admin.updateUserById(b.user_id, { password: String(b.password) });
+      if (error) return res.status(400).json({ error: error.message });
+      return res.status(200).json({ ok: true });
+    }
+
+    // DELETE { user_id } → 승인 대기 중인 가입 신청 거절(계정 삭제). 승인된 직원은 삭제하지 않고 '재직' 해제로 처리.
+    if (req.method === 'DELETE') {
+      const target = b.user_id && (await profileOf(b.user_id));
+      if (!target) return res.status(404).json({ error: '계정을 찾을 수 없어요.' });
+      if (target.approved) return res.status(400).json({ error: '승인된 직원은 삭제 대신 재직 해제를 해 주세요.' });
+      const { error } = await admin.auth.admin.deleteUser(b.user_id);
       if (error) return res.status(400).json({ error: error.message });
       return res.status(200).json({ ok: true });
     }

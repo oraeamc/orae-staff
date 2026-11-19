@@ -57,7 +57,7 @@ const kstIso = (date, hhmm) => new Date(`${date}T${hhmm}:00+09:00`).toISOString(
 const num = (n) => (Math.round(Number(n) * 10) / 10).toString();
 function hours(a, b) { if (!a || !b) return ''; const h = (new Date(b) - new Date(a)) / 3600000; return h > 0 ? `${num(h)}시간` : ''; }
 function activePeople() {
-  return state.profiles.filter((p) => p.active).sort((a, b) => (a.role === b.role ? a.name.localeCompare(b.name, 'ko') : a.role === 'admin' ? -1 : 1));
+  return state.profiles.filter((p) => p.active && p.approved !== false).sort((a, b) => (a.role === b.role ? a.name.localeCompare(b.name, 'ko') : a.role === 'admin' ? -1 : 1));
 }
 
 let toastTimer;
@@ -102,13 +102,12 @@ async function boot() {
 }
 
 async function loadBase() {
-  const [profiles, settings] = await Promise.all([
-    sb.from('profiles').select('*'),
-    sb.from('settings').select('*').eq('id', 1).single(),
-  ]);
-  state.profiles = must(profiles);
-  state.settings = must(settings);
+  state.profiles = must(await sb.from('profiles').select('*'));
   state.me = state.profiles.find((p) => p.id === state.session.user.id) || null;
+  // 승인 전 계정은 설정을 읽을 수 없음
+  if (state.me && state.me.active && state.me.approved !== false) {
+    state.settings = must(await sb.from('settings').select('*').eq('id', 1).single());
+  }
 }
 
 // ───────── 로그인 ─────────
@@ -121,7 +120,29 @@ function renderLogin(msg = '') {
     <label class="f">비밀번호<input type="password" name="pw" autocomplete="current-password" required></label>
     <div class="err">${esc(msg)}</div>
     <button class="btn primary" type="submit">로그인</button>
-    <p class="small">계정은 원장님이 만들어 드려요.</p>
+    <button class="btn ghost" type="button" data-action="showSignup">처음이세요? 가입 신청</button>
+  </form></div>`;
+}
+
+function renderSignup(msg = '', done = false) {
+  $app.innerHTML = done ? `
+  <div class="login"><div class="card">
+    <div class="brand"><b>ORAE</b><span>직원관리</span></div>
+    <h1>가입 신청 완료</h1>
+    <p class="sub">원장님이 승인하면 바로 로그인할 수 있어요.</p>
+    <button class="btn primary" data-action="showLogin">로그인 화면으로</button>
+  </div></div>` : `
+  <div class="login"><form class="card" data-form="signup">
+    <div class="brand"><b>ORAE</b><span>직원관리</span></div>
+    <h1>가입 신청</h1>
+    <p class="small">병원 Wi-Fi에 연결된 상태에서 신청해 주세요. 원장님 승인 후 사용할 수 있어요.</p>
+    <label class="f">이름<input type="text" name="name" maxlength="30" required></label>
+    <label class="f">아이디 (영문 소문자·숫자 3~30자)<input type="text" name="login_id" autocomplete="username" autocapitalize="none" pattern="[a-z0-9._\\-]{3,30}" required></label>
+    <label class="f">비밀번호 (8자 이상)<input type="password" name="password" autocomplete="new-password" minlength="8" required></label>
+    <label class="f">비밀번호 확인<input type="password" name="password2" autocomplete="new-password" minlength="8" required></label>
+    <div class="err">${esc(msg)}</div>
+    <button class="btn primary" type="submit">가입 신청</button>
+    <button class="btn ghost" type="button" data-action="showLogin">로그인 화면으로</button>
   </form></div>`;
 }
 
@@ -133,6 +154,10 @@ function render() {
   }
   if (!state.me.active) {
     $app.innerHTML = '<div class="login"><div class="card"><h2>사용이 중지된 계정이에요</h2><button class="btn" data-action="logout">로그아웃</button></div></div>';
+    return;
+  }
+  if (state.me.approved === false) {
+    $app.innerHTML = `<div class="login"><div class="card"><div class="brand"><b>ORAE</b><span>직원관리</span></div><h2>${esc(state.me.name)}님, 승인을 기다리고 있어요</h2><p class="sub">원장님이 승인하면 바로 사용할 수 있어요.</p><button class="btn primary" data-action="recheck">승인됐는지 확인</button><button class="btn ghost" data-action="logout">로그아웃</button></div></div>`;
     return;
   }
   const tabs = isAdmin() ? TABS_ADMIN : TABS_STAFF;
@@ -348,8 +373,10 @@ async function viewManage() {
     <td class="small">${r.edit_note ? `수정: ${esc(r.edit_note)}` : ''}</td>
     <td><button class="btn sm" data-action="editAtt" data-id="${r.id}">수정</button></td></tr>`).join('');
 
+  const waiting = state.profiles.filter((p) => p.approved === false).length;
   return `
   <h1>관리</h1>
+  ${waiting ? `<div class="net no"><div><b>가입 승인 대기 ${waiting}명</b> — <button class="btn sm" data-action="tab" data-tab="people">직원·설정에서 승인하기</button></div></div>` : ''}
   <div class="grid3" style="grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px">
     <div class="stat"><span class="k">지금 근무 중</span><span class="v">${here.length} / ${people.length}명</span></div>
     <div class="stat"><span class="k">승인 대기</span><span class="v" style="color:var(--warn)">${pending.length}건</span></div>
@@ -400,7 +427,20 @@ async function viewPeople() {
       : '<button class="btn primary" data-action="registerDevice">이 기기를 병원 기기로 등록</button><p class="small">병원 Wi-Fi(인터넷)에 연결된, 항상 켜두는 PC에서 누르세요.</p>'}
     <div class="list">${devices.length ? devices.map((d) => `<div><span>${esc(d.name)}<br><span class="small">${esc(d.last_ip || '')} · ${ago(d.last_seen)}</span></span><button class="btn sm ghost danger" data-action="removeDevice" data-id="${d.id}">해제</button></div>`).join('') : '<div><span class="sub">등록된 병원 기기가 없어요</span></div>'}</div>`;
 
-  const rows = [...state.profiles].sort((a, b) => Number(b.active) - Number(a.active) || a.name.localeCompare(b.name, 'ko')).map((p) => {
+  const pendingUsers = state.profiles.filter((p) => p.approved === false);
+  const pendingHtml = pendingUsers.length ? `
+  <section class="card" style="border:2px solid var(--warn)">
+    <h2>가입 승인 대기 ${pendingUsers.length}명</h2>
+    <p class="small">본인이 맞는지 확인하고 입사일·직군을 넣은 뒤 승인해 주세요.</p>
+    ${pendingUsers.map((p) => `<div class="row" data-pending="${p.id}" style="border-top:1px solid var(--line);padding-top:12px">
+      <div style="min-width:140px"><b>${esc(p.name)}</b><div class="small">아이디 ${esc(p.login_id || '')}</div></div>
+      <label class="f" style="flex:1;min-width:120px">직군<input type="text" name="job" value="${esc(p.job)}"></label>
+      <label class="f" style="flex:1;min-width:150px">입사일<input type="date" name="hire_date" value="${p.hire_date || ''}"></label>
+      <div class="row" style="gap:6px;align-self:flex-end"><button class="btn primary" data-action="approveUser" data-id="${p.id}">승인</button><button class="btn danger" data-action="rejectUser" data-id="${p.id}">거절</button></div>
+    </div>`).join('')}
+  </section>` : '';
+
+  const rows = [...state.profiles].filter((p) => p.approved !== false).sort((a, b) => Number(b.active) - Number(a.active) || a.name.localeCompare(b.name, 'ko')).map((p) => {
     const info = p.is_employee ? leaveInfo(p, s, state.profiles, approved) : null;
     return `<tr data-row="${p.id}">
       <td><input type="text" name="name" value="${esc(p.name)}" aria-label="이름" style="min-width:90px"><div class="small">${esc(p.login_id || '')}</div></td>
@@ -416,6 +456,7 @@ async function viewPeople() {
 
   return `
   <h1>직원·설정</h1>
+  ${pendingHtml}
   <section class="card">
     <h2>직원</h2>
     <p class="small">근로자: 5인 계산과 연차 대상인 직원(대표원장은 해제). 연차 가감: 이월·포상 등 수동 조정. 연차 칸은 발생 / 사용 / 잔여.</p>
@@ -643,6 +684,21 @@ const actions = {
     if (!pw) return;
     try { await api('/api/users', { method: 'PUT', body: JSON.stringify({ user_id: b.dataset.id, password: pw }) }); toast('비밀번호를 바꿨어요'); } catch (e) { toast(e.message); }
   },
+  showSignup() { renderSignup(); },
+  showLogin() { renderLogin(); },
+  async recheck() { await loadBase(); render(); },
+  async approveUser(b) {
+    const row = document.querySelector(`[data-pending="${b.dataset.id}"]`);
+    const patch = { approved: true, active: true, job: row.querySelector('[name=job]').value.trim() || '테크니션', hire_date: row.querySelector('[name=hire_date]').value || null };
+    if (!patch.hire_date) return toast('입사일을 넣어 주세요 (연차 계산에 필요해요)');
+    try { must(await sb.from('profiles').update(patch).eq('id', b.dataset.id)); await refreshBase(); toast(`${nameOf(b.dataset.id)}님을 승인했어요`); } catch (e) { toast(e.message); }
+    renderView();
+  },
+  async rejectUser(b) {
+    if (!window.confirm(`${nameOf(b.dataset.id)}님의 가입 신청을 거절할까요? 계정이 삭제됩니다.`)) return;
+    try { await api('/api/users', { method: 'DELETE', body: JSON.stringify({ user_id: b.dataset.id }) }); await refreshBase(); toast('거절했어요'); } catch (e) { toast(e.message); }
+    renderView();
+  },
   async registerDevice() {
     const name = window.prompt('이 기기 이름 (예: 데스크 PC)', '데스크 PC');
     if (name === null) return;
@@ -726,6 +782,16 @@ const forms = {
     const { data: { session } } = await sb.auth.getSession();
     state.session = session; state.tab = 'home';
     await loadBase(); render();
+  },
+  async signup(f) {
+    const body = { name: f.name.value.trim(), login_id: f.login_id.value.trim().toLowerCase(), password: f.password.value };
+    if (body.password !== f.password2.value) return renderSignup('비밀번호가 서로 달라요.');
+    try {
+      const r = await fetch('/api/signup', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) return renderSignup(j.error || '신청에 실패했어요.');
+      renderSignup('', true);
+    } catch { renderSignup('네트워크 오류가 났어요. 다시 시도해 주세요.'); }
   },
   async leave(f) {
     const kind = state.leaveKind;
