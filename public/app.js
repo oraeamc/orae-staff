@@ -658,8 +658,10 @@ async function viewLunch() {
 
   let adminHtml = '';
   if (isAdmin()) {
-    const all = must(await sb.from('lunch_expenses').select('*').gte('spend_date', ms).lte('spend_date', me));
-    const people = activePeople();
+    const people = activePeople().filter((p) => p.role !== 'admin'); // 점심 지원은 테크니션(직원)만
+    const ids = people.map((p) => p.id);
+    const all = must(await sb.from('lunch_expenses').select('*').gte('spend_date', ms).lte('spend_date', me).order('spend_date', { ascending: false }))
+      .filter((r) => ids.includes(r.user_id));
     const sumAll = lunchTotals(all, S);
     const rows = people.map((p) => {
       const x = lunchTotals(all.filter((r) => r.user_id === p.id), S);
@@ -674,7 +676,15 @@ async function viewLunch() {
         <label class="f" style="flex:1;min-width:180px">1일 지원 한도 (원)<input type="number" name="support" value="${S}" min="0" step="500" inputmode="numeric"></label>
         <button class="btn sm" type="submit" style="align-self:flex-end;min-height:44px">저장</button>
       </form>
+    </section>
+    <section class="card">
+      <h2>${Number(month.slice(5))}월 입력 내역</h2>
+      <div class="list">${all.length ? all.map((r) => { const x = lunchSplit(r.amount, S); return `<div><span>${md(r.spend_date)} · ${esc(nameOf(r.user_id))} <b>${won(r.amount)}</b>${r.memo ? ` <span class="small">${esc(r.memo)}</span>` : ''}</span><span class="small" style="${x.over ? 'color:var(--warn)' : ''}">${x.over ? `본인 부담 ${won(x.over)}` : '전액 지원'}</span></div>`; }).join('') : '<div><span class="sub">입력한 기록이 없어요</span></div>'}</div>
     </section>`;
+    return `
+  <div class="row between"><h1>점심 (테크니션)</h1>
+    <input type="month" value="${month}" data-change="lunchMonth" aria-label="월 선택" style="width:auto"></div>
+  ${adminHtml}`;
   }
 
   return `
@@ -906,7 +916,8 @@ const actions = {
   async lunchCsv() {
     const [ms, me] = monthRange(state.lunchMonth);
     const S = lunchSupport();
-    const rows = must(await sb.from('lunch_expenses').select('*').gte('spend_date', ms).lte('spend_date', me).order('spend_date'));
+    const staffIds = state.profiles.filter((p) => p.role !== 'admin').map((p) => p.id);
+    const rows = must(await sb.from('lunch_expenses').select('*').gte('spend_date', ms).lte('spend_date', me).order('spend_date')).filter((r) => staffIds.includes(r.user_id));
     const lines = [['날짜', '이름', '금액', '병원 지원', '본인 부담', '메모']]
       .concat(rows.map((r) => { const x = lunchSplit(r.amount, S); return [r.spend_date, nameOf(r.user_id), r.amount, x.sup, x.over, r.memo || '']; }));
     downloadCsv(`점심값_${state.lunchMonth}.csv`, lines);
