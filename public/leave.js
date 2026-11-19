@@ -45,7 +45,10 @@ export function legalDays(months) {
 
 export function customDays(months, s) {
   const years = Math.floor(months / 12);
-  if (years < 1) return s.custom_first_year_monthly ? Math.min(11, months) : 0;
+  if (years < 1) {
+    if (s.custom_first_year_upfront) return Number(s.custom_first_year_days ?? 11); // 입사 시 한 번에 지급
+    return s.custom_first_year_monthly ? Math.min(11, months) : 0;
+  }
   return Number(s.custom_annual_days || 0) + (s.custom_seniority ? Math.floor((years - 1) / 2) : 0);
 }
 
@@ -58,11 +61,13 @@ export function leaveInfo(p, settings, profiles, approvedLeaves, today = kstToda
   const start = addYears(p.hire_date, years);
   const end = addDays(addYears(p.hire_date, years + 1), -1);
   const base = mode === 'legal' ? legalDays(months) : customDays(months, settings);
-  const granted = base + Number(p.leave_adjust || 0);
+  // 연차 가감은 지정한 연차 기간에만 적용 (기간 미지정인 예전 값은 매년 적용)
+  const adjust = !p.leave_adjust_period || p.leave_adjust_period === start ? Number(p.leave_adjust || 0) : 0;
+  const granted = base + adjust;
   const used = approvedLeaves
     .filter((l) => l.user_id === p.id && ['approved', 'cancel_requested'].includes(l.status) && l.start_date >= start && l.start_date <= end)
     .reduce((a, l) => a + Number(l.days), 0);
-  return { mode, months, years, start, end, granted, used, remain: granted - used };
+  return { mode, months, years, start, end, base, adjust, granted, used, remain: granted - used };
 }
 
 // 신청 일수: 반차 0.5일, 연차는 기간 내 날짜 중 본인 '휴무'로 잡힌 날 제외

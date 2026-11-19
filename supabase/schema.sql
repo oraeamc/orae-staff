@@ -255,3 +255,11 @@ grant execute on function public.request_leave_cancel(bigint) to authenticated;
 drop policy if exists "leave read" on public.leave_requests;
 create policy "leave read" on public.leave_requests for select to authenticated
   using (user_id = auth.uid() or (status in ('approved','cancel_requested') and public.is_member()) or public.is_admin());
+
+-- ───────── 1년 미만 일괄 지급 + 가감 기간 ─────────
+alter table public.settings add column if not exists custom_first_year_upfront boolean not null default false;
+alter table public.settings add column if not exists custom_first_year_days numeric not null default 11;
+alter table public.profiles add column if not exists leave_adjust_period date;  -- 가감을 적용할 연차 기간 시작일
+
+-- 연차 관리 대상(근로자 여부와 별개)
+alter table public.profiles add column if not exists track_leave boolean not null default true;

@@ -217,7 +217,7 @@ async function viewHome() {
   const todayShift = effShift(me, today, shifts);
   const todayLeave = leaves.find((l) => l.start_date <= today && l.end_date >= today);
   const nextDuty = shifts.find((s) => s.kind === 'night' || s.kind === 'weekend');
-  const info = me.is_employee ? leaveInfo(me, state.settings, state.profiles, leaves, today) : null;
+  const info = me.track_leave !== false ? leaveInfo(me, state.settings, state.profiles, leaves, today) : null;
 
   let shiftText = '근무표 미정';
   if (todayLeave) shiftText = KIND[todayLeave.kind];
@@ -263,7 +263,7 @@ async function viewLeave() {
     sb.from('leave_requests').select('*').eq('user_id', me.id).order('start_date', { ascending: false }).limit(30).then(must),
     approvedLeaves(me.id),
   ]);
-  const info = me.is_employee ? leaveInfo(me, state.settings, state.profiles, approved) : null;
+  const info = me.track_leave !== false ? leaveInfo(me, state.settings, state.profiles, approved) : null;
   const k = state.leaveKind;
   const today = kstToday();
   return `
@@ -273,7 +273,7 @@ async function viewLeave() {
       <div><div class="k">사용</div><div class="v">${num(info.used)}일</div></div>
       <div><div class="k">잔여</div><div class="v">${num(info.remain)}일</div></div></div>
       <div class="k" style="margin-top:8px">${md(info.start)} ~ ${md(info.end)} 기준</div></div>`
-    : `<div class="card"><span class="sub">${me.is_employee ? '입사일이 등록되면 연차가 계산돼요. 원장님께 문의해 주세요.' : '연차 계산 대상이 아니에요.'}</span></div>`}
+    : `<div class="card"><span class="sub">${me.track_leave !== false ? '입사일이 등록되면 연차가 계산돼요. 원장님께 문의해 주세요.' : '연차 계산 대상이 아니에요.'}</span></div>`}
   <form class="card" data-form="leave">
     <h2>새 신청</h2>
     <div class="seg" role="group" aria-label="종류">
@@ -462,15 +462,15 @@ async function viewPeople() {
   </section>` : '';
 
   const rows = [...state.profiles].filter((p) => p.approved !== false).sort((a, b) => Number(b.active) - Number(a.active) || a.name.localeCompare(b.name, 'ko')).map((p) => {
-    const info = p.is_employee ? leaveInfo(p, s, state.profiles, approved) : null;
+    const info = p.track_leave !== false ? leaveInfo(p, s, state.profiles, approved) : null;
     return `<tr data-row="${p.id}">
       <td><input type="text" name="name" value="${esc(p.name)}" aria-label="이름" style="min-width:90px"><div class="small">${esc(p.login_id || '')}</div></td>
       <td><input type="text" name="job" value="${esc(p.job)}" aria-label="직군" style="min-width:80px"></td>
       <td><select name="role" aria-label="권한"><option value="staff" ${p.role === 'staff' ? 'selected' : ''}>직원</option><option value="admin" ${p.role === 'admin' ? 'selected' : ''}>원장(관리)</option></select></td>
       <td><input type="date" name="hire_date" value="${p.hire_date || ''}" aria-label="입사일"></td>
-      <td><label class="check"><input type="checkbox" name="is_employee" ${p.is_employee ? 'checked' : ''}>근로자</label><label class="check"><input type="checkbox" name="active" ${p.active ? 'checked' : ''}>재직</label></td>
+      <td><label class="check"><input type="checkbox" name="is_employee" ${p.is_employee ? 'checked' : ''}>근로자</label><label class="check"><input type="checkbox" name="track_leave" ${p.track_leave !== false ? 'checked' : ''}>연차 관리</label><label class="check"><input type="checkbox" name="active" ${p.active ? 'checked' : ''}>재직</label></td>
       <td><div class="days">${[1, 2, 3, 4, 5, 6, 0].map((w) => `<label title="${DOW[w]}요일 고정 휴무"><input type="checkbox" name="off${w}" ${(p.weekly_off || []).includes(w) ? 'checked' : ''}>${DOW[w]}</label>`).join('')}</div></td>
-      <td><input type="number" name="leave_adjust" value="${p.leave_adjust}" step="0.5" aria-label="연차 가감" style="width:80px"></td>
+      <td><input type="number" name="leave_adjust" value="${info ? info.adjust : p.leave_adjust}" step="0.5" aria-label="연차 가감" style="width:80px"></td>
       <td class="small">${info ? `${num(info.granted)} / ${num(info.used)} / <b>${num(info.remain)}</b>` : '—'}</td>
       <td><div class="row" style="gap:6px"><button class="btn sm primary" data-action="saveProfile" data-id="${p.id}">저장</button><button class="btn sm" data-action="resetPw" data-id="${p.id}">비번 변경</button></div></td>
     </tr>`;
@@ -481,7 +481,7 @@ async function viewPeople() {
   ${pendingHtml}
   <section class="card">
     <h2>직원</h2>
-    <p class="small">고정 휴무 요일: 체크한 요일은 근무표에 자동으로 '휴무', 나머지는 '정규'로 들어가요. 근로자: 5인 계산과 연차 대상인 직원(대표원장은 해제). 연차 가감: 이월·포상 등 수동 조정. 연차 칸은 발생 / 사용 / 잔여.</p>
+    <p class="small">고정 휴무 요일: 체크한 요일은 근무표에 자동으로 '휴무', 나머지는 '정규'로 들어가요. 근로자: 5인 인원 계산에 들어가는 직원(대표원장은 해제). 연차 관리: 연차를 계산·표시할 사람(원장님도 체크 가능). 연차 가감: 이월·포상 등 수동 조정(지금 연차 기간에만 적용, 다음 해엔 자동으로 0). 연차 칸은 발생 / 사용 / 잔여.</p>
     <div class="tbl-wrap"><table style="min-width:1100px"><thead><tr><th>이름</th><th>직군</th><th>권한</th><th>입사일</th><th>구분</th><th>고정 휴무 요일</th><th>연차 가감</th><th>연차</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
   </section>
   <form class="card" data-form="newUser">
@@ -494,7 +494,7 @@ async function viewPeople() {
       <label class="f">입사일<input type="date" name="hire_date"></label>
       <label class="f">권한<select name="role"><option value="staff">직원</option><option value="admin">원장(관리)</option></select></label>
     </div>
-    <label class="check"><input type="checkbox" name="is_employee" checked>근로자 (연차·5인 계산 대상)</label>
+    <label class="check"><input type="checkbox" name="is_employee" checked>근로자 (5인 인원 계산 대상)</label>
     <button class="btn primary" type="submit">계정 만들기</button>
   </form>
   <div class="cols">
@@ -508,7 +508,11 @@ async function viewPeople() {
         <label class="f">1년 이상 직원 연간 연차 (일)<input type="number" name="custom_annual_days" value="${s.custom_annual_days}" step="0.5" min="0"></label>
         <label class="f">정규 근무시간 표시<input type="text" name="regular_hours" value="${esc(s.regular_hours)}"></label>
       </div>
-      <label class="check"><input type="checkbox" name="custom_first_year_monthly" ${s.custom_first_year_monthly ? 'checked' : ''}>1년 미만 직원: 한 달 근무마다 1일 (최대 11일)</label>
+      <div class="f">1년 미만 직원 연차
+        <label class="check"><input type="radio" name="first_year" value="monthly" ${!s.custom_first_year_upfront && s.custom_first_year_monthly ? 'checked' : ''}>한 달 근무마다 1일씩 생김 (최대 11일)</label>
+        <label class="check"><input type="radio" name="first_year" value="upfront" ${s.custom_first_year_upfront ? 'checked' : ''}>입사할 때 <input type="number" name="custom_first_year_days" value="${s.custom_first_year_days ?? 11}" min="0" step="0.5" style="width:70px;min-height:32px;margin:0 4px">일 한 번에 지급</label>
+        <label class="check"><input type="radio" name="first_year" value="none" ${!s.custom_first_year_upfront && !s.custom_first_year_monthly ? 'checked' : ''}>지급 안 함</label>
+      </div>
       <label class="check"><input type="checkbox" name="custom_seniority" ${s.custom_seniority ? 'checked' : ''}>3년차부터 2년마다 1일 추가</label>
       <p class="small">연차 기간은 각 직원 입사일 기준 1년 단위입니다. 출근율 80% 요건은 따로 확인해 주세요.</p>
       <button class="btn primary" type="submit">저장</button>
@@ -704,11 +708,16 @@ const actions = {
     const v = (n) => tr.querySelector(`[name="${n}"]`);
     const patch = {
       name: v('name').value.trim(), job: v('job').value.trim(), role: v('role').value,
-      hire_date: v('hire_date').value || null, is_employee: v('is_employee').checked,
+      hire_date: v('hire_date').value || null, is_employee: v('is_employee').checked, track_leave: v('track_leave').checked,
       active: v('active').checked, leave_adjust: Number(v('leave_adjust').value || 0),
       weekly_off: [0, 1, 2, 3, 4, 5, 6].filter((w) => v(`off${w}`).checked),
+      leave_adjust_period: null,
     };
     if (b.dataset.id === state.me.id && (patch.role !== 'admin' || !patch.active)) return toast('본인의 원장 권한은 해제할 수 없어요');
+    // 가감은 지금 연차 기간(입사일 기준 1년)에만 적용
+    const target = state.profiles.find((x) => x.id === b.dataset.id);
+    const cur = leaveInfo({ ...target, ...patch, leave_adjust: 0 }, state.settings, state.profiles, []);
+    patch.leave_adjust_period = patch.leave_adjust && cur ? cur.start : null;
     try { must(await sb.from('profiles').update(patch).eq('id', b.dataset.id)); await refreshBase(); toast('저장했어요'); } catch (e) { toast(e.message); }
     renderView();
   },
@@ -874,7 +883,9 @@ const forms = {
     const patch = {
       leave_mode: f.leave_mode.value || 'custom',
       custom_annual_days: Number(f.custom_annual_days.value || 0),
-      custom_first_year_monthly: f.custom_first_year_monthly.checked,
+      custom_first_year_monthly: f.first_year.value === 'monthly',
+      custom_first_year_upfront: f.first_year.value === 'upfront',
+      custom_first_year_days: Number(f.custom_first_year_days.value || 0),
       custom_seniority: f.custom_seniority.checked,
       regular_hours: f.regular_hours.value.trim() || '09:00–18:00',
       updated_at: new Date().toISOString(),
