@@ -87,6 +87,27 @@ function ask(message, { input = false, value = '', placeholder = '', ok = '확�
   });
 }
 
+// 화면 안 선택창: 고른 값 반환, 닫으면 null
+function choose(title, options, current) {
+  return new Promise((resolve) => {
+    const wrap = document.createElement('div');
+    wrap.className = 'modal-back';
+    wrap.innerHTML = `<div class="modal card" role="dialog" aria-modal="true" aria-label="${esc(title)}">
+      <h2>${esc(title)}</h2>
+      <div class="choices">${options.map((o, i) => `<button type="button" class="btn ${o.v === current ? 'primary' : ''}" data-i="${i}">${esc(o.label)}${o.v === current ? ' ✓' : ''}</button>`).join('')}</div>
+      <button type="button" class="btn ghost" data-x="cancel">닫기</button>
+    </div>`;
+    const done = (v) => { wrap.remove(); resolve(v); };
+    wrap.addEventListener('click', (e) => {
+      if (e.target === wrap || e.target.dataset.x === 'cancel') return done(null);
+      const btn = e.target.closest('[data-i]');
+      if (btn) done(options[Number(btn.dataset.i)].v);
+    });
+    document.body.appendChild(wrap);
+    wrap.querySelector('[data-i]').focus();
+  });
+}
+
 let toastTimer;
 function toast(msg) {
   const t = document.getElementById('toast');
@@ -348,7 +369,7 @@ async function viewSchedule() {
       if (lv) { cls = 's-leave'; label = lv.kind === 'full' ? KIND[lv.kind] : `${base}·${KIND[lv.kind]}`; }
       const text = `${esc(p.name)}<br>${label}`;
       return admin
-        ? `<button type="button" class="chip ${cls}" data-action="cycle" data-uid="${p.id}" data-date="${d}" data-kind="${sh?.kind || ''}" aria-label="${esc(p.name)} ${d} ${label}, 눌러서 변경">${text}</button>`
+        ? `<button type="button" class="chip ${cls}" data-action="cycle" data-uid="${p.id}" data-date="${d}" data-kind="${sh?.kind || ''}" aria-label="${esc(p.name)} ${d} ${label}, 눌러서 변경하기">${text}</button>`
         : `<span class="chip ${cls}">${text}</span>`;
     }).join('');
     return `<div class="day ${d === today ? 'today' : ''}"><div class="d ${w === 6 ? 'sat' : w === 0 ? 'sun' : ''}"><small>${DOW[w]}</small><b>${Number(d.slice(8))}</b></div><div class="chips">${chips}</div></div>`;
@@ -362,7 +383,7 @@ async function viewSchedule() {
     <button class="btn" data-action="week" data-n="7" aria-label="다음 주">›</button>
   </div>
   <div class="legend"><span><i class="s-reg"></i>정규</span>${state.settings.use_duty ? '<span><i class="s-duty"></i>당직</span>' : ''}<span><i class="s-leave"></i>연차·반차</span><span><i class="s-off"></i>휴무</span></div>
-  ${admin ? `<p class="small">고정 휴무 요일은 직원·설정에서 정해요. 칸을 누를 때마다 ${state.settings.use_duty ? '정규 → 야간당직 → 주말당직 → 휴무' : '정규 → 휴무'} → 자동(기본값) 순서로 바뀌어요.</p>` : ''}
+  ${admin ? `<p class="small">고정 휴무 요일은 직원·설정에서 정해요. 특정 날만 바꾸려면 그 칸을 눌러 고르세요.</p>` : ''}
   <section class="card" style="padding:6px 16px">${dayHtml}</section>
   ${ws !== mondayOf(today) ? '<button class="btn" data-action="thisWeek">이번 주로</button>' : ''}`;
 }
@@ -671,10 +692,19 @@ const actions = {
   week(b) { state.weekStart = addDays(state.weekStart, Number(b.dataset.n)); renderView(); },
   thisWeek() { state.weekStart = null; renderView(); },
   async cycle(b) {
-    const cur = b.dataset.kind || null;
-    const cyc = state.settings.use_duty ? CYCLE : [null, 'regular', 'off'];
-    const next = cyc[(Math.max(0, cyc.indexOf(cur)) + 1) % cyc.length];
+    const cur = b.dataset.kind || '';
     const { uid, date } = b.dataset;
+    const p = state.profiles.find((x) => x.id === uid);
+    const autoKind = (p?.weekly_off || []).includes(dowOf(date)) ? '휴무' : '정규';
+    const opts = [
+      { v: 'regular', label: '정규 근무' },
+      { v: 'off', label: '휴무' },
+      ...(state.settings.use_duty ? [{ v: 'night', label: '야간당직' }, { v: 'weekend', label: '주말당직' }] : []),
+      { v: '', label: `원래대로 (고정 패턴: ${autoKind})` },
+    ];
+    const pick = await choose(`${p?.name || ''} · ${md(date)}`, opts, cur);
+    if (pick === null || pick === cur) return;
+    const next = pick || null;
     b.disabled = true;
     try {
       if (next) must(await sb.from('shifts').upsert({ user_id: uid, work_date: date, kind: next }, { onConflict: 'user_id,work_date' }));

@@ -132,3 +132,5 @@ td select{min-width:120px}
 .modal-back{position:fixed;inset:0;background:rgba(35,32,28,.45);display:flex;align-items:center;justify-content:center;padding:20px;z-index:50}
 .modal{width:100%;max-width:380px}
 .btn.primary.danger-fill{background:var(--danger);border-color:var(--danger)}
+.choices{display:flex;flex-direction:column;gap:8px}
+.choices .btn{text-align:left;min-height:48px}
