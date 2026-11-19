@@ -1,0 +1,127 @@
+-- 오래동물의료센터 직원관리 — Supabase 데이터베이스 설정
+-- Supabase 대시보드 > SQL Editor 에 이 파일 전체를 붙여넣고 Run 하세요. (한 번만)
+
+-- ───────── 테이블 ─────────
+create table if not exists public.profiles (
+  id uuid primary key references auth.users(id) on delete cascade,
+  name text not null default '',
+  login_id text unique,
+  role text not null default 'staff' check (role in ('admin','staff')),   -- admin = 원장(관리 권한)
+  job text not null default '테크니션',
+  hire_date date,
+  is_employee boolean not null default true,   -- 근로자 여부 (5인 계산·연차 대상). 대표원장은 false
+  active boolean not null default true,         -- 퇴사 시 false
+  leave_adjust numeric not null default 0,      -- 연차 수동 가감(이월·포상 등)
+  created_at timestamptz not null default now()
+);
+
+create table if not exists public.settings (
+  id int primary key default 1 check (id = 1),
+  allowed_ips text[] not null default '{}',     -- 출퇴근 허용 병원 공인 IP
+  leave_mode text not null default 'custom' check (leave_mode in ('legal','custom')),
+  legal_threshold int not null default 5,       -- 근로자 수가 이 이상이면 법 기준 자동 적용
+  custom_annual_days numeric not null default 15,
+  custom_first_year_monthly boolean not null default true,
+  custom_seniority boolean not null default false,
+  regular_hours text not null default '09:00–18:00',
+  updated_at timestamptz not null default now()
+);
+insert into public.settings (id) values (1) on conflict (id) do nothing;
+
+create table if not exists public.attendance (
+  id bigint generated always as identity primary key,
+  user_id uuid not null references public.profiles(id) on delete cascade,
+  work_date date not null,
+  clock_in timestamptz,
+  clock_out timestamptz,
+  in_ip text,
+  out_ip text,
+  edited_by uuid references public.profiles(id),
+  edit_note text,
+  edited_at timestamptz,
+  unique (user_id, work_date)
+);
+
+create table if not exists public.leave_requests (
+  id bigint generated always as identity primary key,
+  user_id uuid not null references public.profiles(id) on delete cascade,
+  kind text not null check (kind in ('full','am','pm')),
+  start_date date not null,
+  end_date date not null,
+  days numeric not null,
+  reason text,
+  status text not null default 'pending' check (status in ('pending','approved','rejected')),
+  decided_by uuid references public.profiles(id),
+  decided_at timestamptz,
+  created_at timestamptz not null default now(),
+  check (end_date >= start_date)
+);
+
+create table if not exists public.shifts (
+  id bigint generated always as identity primary key,
+  user_id uuid not null references public.profiles(id) on delete cascade,
+  work_date date not null,
+  kind text not null check (kind in ('regular','night','weekend','off')),
+  unique (user_id, work_date)
+);
+
+-- ───────── 권한 확인 함수 ─────────
+create or replace function public.is_admin() returns boolean
+language sql stable security definer set search_path = public as $$
+  select exists (select 1 from public.profiles where id = auth.uid() and role = 'admin' and active);
+$$;
+
+-- 계정이 만들어지면 프로필 자동 생성. 맨 처음 만든 계정은 자동으로 원장(admin).
+create or replace function public.handle_new_user() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+  insert into public.profiles (id, name, login_id, role, is_employee)
+  values (
+    new.id,
+    coalesce(new.raw_user_meta_data->>'name', split_part(new.email, '@', 1)),
+    split_part(new.email, '@', 1),
+    case when exists (select 1 from public.profiles) then 'staff' else 'admin' end,
+    case when exists (select 1 from public.profiles) then true else false end
+  );
+  return new;
+end $$;
+
+drop trigger if exists on_auth_user_created on auth.users;
+create trigger on_auth_user_created after insert on auth.users
+  for each row execute function public.handle_new_user();
+
+-- ───────── 보안 규칙 (RLS) ─────────
+alter table public.profiles enable row level security;
+alter table public.settings enable row level security;
+alter table public.attendance enable row level security;
+alter table public.leave_requests enable row level security;
+alter table public.shifts enable row level security;
+
+-- 프로필: 로그인한 직원 모두 열람(근무표 이름 표시용), 수정은 원장만
+create policy "profiles read" on public.profiles for select to authenticated using (true);
+create policy "profiles admin update" on public.profiles for update to authenticated using (public.is_admin()) with check (public.is_admin());
+
+-- 설정: 모두 열람, 수정은 원장만
+create policy "settings read" on public.settings for select to authenticated using (true);
+create policy "settings admin update" on public.settings for update to authenticated using (public.is_admin()) with check (public.is_admin());
+
+-- 출퇴근: 본인 기록만 열람(원장은 전체). 직원은 직접 쓸 수 없고 서버(Wi-Fi 확인)만 기록.
+create policy "attendance read" on public.attendance for select to authenticated using (user_id = auth.uid() or public.is_admin());
+create policy "attendance admin insert" on public.attendance for insert to authenticated with check (public.is_admin());
+create policy "attendance admin update" on public.attendance for update to authenticated using (public.is_admin()) with check (public.is_admin());
+create policy "attendance admin delete" on public.attendance for delete to authenticated using (public.is_admin());
+
+-- 연차: 본인 신청 + 승인된 연차(근무표 표시용) 열람, 원장은 전체
+create policy "leave read" on public.leave_requests for select to authenticated
+  using (user_id = auth.uid() or status = 'approved' or public.is_admin());
+create policy "leave own insert" on public.leave_requests for insert to authenticated
+  with check (user_id = auth.uid() and status = 'pending' and decided_by is null);
+create policy "leave admin update" on public.leave_requests for update to authenticated using (public.is_admin()) with check (public.is_admin());
+create policy "leave delete" on public.leave_requests for delete to authenticated
+  using ((user_id = auth.uid() and status = 'pending') or public.is_admin());
+
+-- 근무표: 모두 열람, 편집은 원장만
+create policy "shifts read" on public.shifts for select to authenticated using (true);
+create policy "shifts admin insert" on public.shifts for insert to authenticated with check (public.is_admin());
+create policy "shifts admin update" on public.shifts for update to authenticated using (public.is_admin()) with check (public.is_admin());
+create policy "shifts admin delete" on public.shifts for delete to authenticated using (public.is_admin());

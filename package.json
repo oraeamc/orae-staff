@@ -1,0 +1,10 @@
+{
+  "name": "orae-staff",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "오래동물의료센터 직원관리 (출퇴근·연차·근무표)",
+  "dependencies": {
+    "@supabase/supabase-js": "^2.45.0"
+  }
+}
