@@ -28,12 +28,24 @@ export function clientIp(req) {
 }
 
 // 등록된 주소와 비교. "2001:db8:1:2:*" 처럼 끝에 * 를 붙이면 앞부분만 맞으면 허용.
+// IPv6는 기기마다 주소 끝부분이 달라서, 같은 공유기(앞 4덩어리 = /64)면 같은 네트워크로 봄
+function v6prefix(ip) {
+  if (!ip.includes(':')) return null;
+  const [head, tail = ''] = ip.split('::');
+  const h = head ? head.split(':') : [];
+  const t = tail ? tail.split(':') : [];
+  const full = ip.includes('::') ? [...h, ...Array(8 - h.length - t.length).fill('0'), ...t] : h;
+  return full.slice(0, 4).map((x) => parseInt(x || '0', 16).toString(16)).join(':');
+}
+
 export function ipAllowed(ip, list) {
   if (!ip) return false;
+  const p = v6prefix(ip);
   return (list || []).some((entry) => {
     const e = String(entry).trim();
     if (!e) return false;
     if (e.endsWith('*')) return ip.startsWith(e.slice(0, -1));
+    if (p && v6prefix(e) === p) return true;
     return ip === e;
   });
 }
